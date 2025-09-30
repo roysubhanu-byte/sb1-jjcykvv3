@@ -1,5 +1,9 @@
 import dotenv from 'dotenv';
 dotenv.config();
+import { apiRoutes } from './api.js';
+import { scoreWritingRouter } from './score-writing.js';
+import { gatekeeperRouter } from './gatekeeper.js';
+import { detailedScoringRouter } from './detailed-scoring.js';
 
 import { fileURLToPath } from 'url';
 import path from 'path';
