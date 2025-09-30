@@ -4,6 +4,8 @@ import { apiRoutes } from './api.js';
 import { scoreWritingRouter } from './score-writing.js';
 import { gatekeeperRouter } from './gatekeeper.js';
 import { detailedScoringRouter } from './detailed-scoring.js';
+// remove any duplicate gatekeeper import
+
 
 import { fileURLToPath } from 'url';
 import path from 'path';
