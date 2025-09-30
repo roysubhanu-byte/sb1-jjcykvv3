@@ -1,0 +1,21 @@
+# Server
+PORT=5000
+NODE_ENV=production
+
+# Your live site (used for CORS)
+FRONTEND_URL=https://www.thelastryielts.com
+
+# Supabase (server-only)
+SUPABASE_URL=https://YOUR-PROJECT.supabase.co
+SUPABASE_SERVICE_KEY=YOUR_SERVICE_ROLE_KEY
+
+# OpenAI (server-only)
+OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+
+# (Optional, only if your backend uses them)
+# RAZORPAY_KEY_ID=rzp_xxxxxxxxxxxxx
+# RAZORPAY_KEY_SECRET=xxxxxxxxxxxxxxxx
+# SMTP_HOST=smtp.gmail.com
+# SMTP_PORT=587
+# SMTP_USER=your_email@gmail.com
+# SMTP_PASS=your_app_password
