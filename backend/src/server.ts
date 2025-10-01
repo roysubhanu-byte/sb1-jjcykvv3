@@ -7,7 +7,7 @@ import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
 
-// ---- Route imports (ESM / NodeNext: use .js in import specifiers) ----
+// ✅ use .ts extensions with NodeNext
 import { apiRoutes } from './routes/api.js';                      // remove if you don't have this file
 import { scoreWritingRouter } from './routes/score-writing.ts';
 import { gatekeeperRouter } from './routes/gatekeeper.ts';
