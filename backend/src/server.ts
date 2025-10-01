@@ -8,7 +8,7 @@ import cors from 'cors';
 import bodyParser from 'body-parser';
 
 // ✅ use .ts extensions with NodeNext
-import { apiRoutes } from './routes/api.js';                      // remove if you don't have this file
+import { apiRoutes } from './routes/api.ts';                      // remove if you don't have this file
 import { scoreWritingRouter } from './routes/score-writing.ts';
 import { gatekeeperRouter } from './routes/gatekeeper.ts';
 import { detailedScoringRouter } from './routes/detailed-scoring.ts';
