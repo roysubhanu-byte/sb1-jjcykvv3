@@ -1,30 +1,26 @@
 // api.ts
 import express from "express";
-import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs-extra";
 import { v4 as uuidv4 } from "uuid";
 
-// Routers located in /routes
-import { scoreWritingRouter } from "./routes/score-writing.js";
-import { gatekeeperRouter } from "./routes/gatekeeper.js";
+// Routers in THIS folder (no utils/, no routes/)
+import { scoreWritingRouter } from "./scoreWriting.js";
+import { gatekeeperRouter } from "./gatekeeper.js";
 
-// Local services (these files sit next to api.ts)
+// Local services in THIS folder
 import { sendEmailReport } from "./emailService.js";
 import { generatePdfReport } from "./pdfService.js";
 
 const router = express.Router();
+const ROOT = process.cwd();
 
-// __dirname helper for ESM
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// --- Data paths (adjust as you like)
-const DATA_DIR = path.join(__dirname, "./data");
+// --- Data paths
+const DATA_DIR = path.join(ROOT, "data");
 const ATTEMPTS_DIR = path.join(DATA_DIR, "attempts");
-const UPLOADS_DIR = path.join(__dirname, "./uploads");
+const UPLOADS_DIR = path.join(ROOT, "uploads");
 
-// Ensure folders exist at boot
+// Ensure folders exist
 fs.ensureDirSync(DATA_DIR);
 fs.ensureDirSync(ATTEMPTS_DIR);
 fs.ensureDirSync(UPLOADS_DIR);
@@ -34,7 +30,7 @@ router.get("/health", (_req, res) => {
   res.json({ ok: true, service: "api", time: new Date().toISOString() });
 });
 
-// Example: save a tiny attempt payload to /data/attempts
+// Save attempt to /data/attempts
 router.post("/attempts", express.json({ limit: "2mb" }), async (req, res) => {
   const id = uuidv4();
   const file = path.join(ATTEMPTS_DIR, `${id}.json`);
@@ -42,7 +38,7 @@ router.post("/attempts", express.json({ limit: "2mb" }), async (req, res) => {
   res.json({ saved: true, id });
 });
 
-// Example: create a PDF via pdfService.ts
+// PDF
 router.post("/report/pdf", express.json({ limit: "2mb" }), async (req, res) => {
   try {
     const pdfBuffer = await generatePdfReport(req.body ?? {});
@@ -53,7 +49,7 @@ router.post("/report/pdf", express.json({ limit: "2mb" }), async (req, res) => {
   }
 });
 
-// Example: send an email via emailService.ts
+// Email
 router.post("/report/email", express.json({ limit: "2mb" }), async (req, res) => {
   try {
     await sendEmailReport(req.body ?? {});
@@ -63,7 +59,7 @@ router.post("/report/email", express.json({ limit: "2mb" }), async (req, res) =>
   }
 });
 
-// Mount feature routers
+// Feature routers
 router.use("/score-writing", scoreWritingRouter);
 router.use("/gatekeeper", gatekeeperRouter);
 
