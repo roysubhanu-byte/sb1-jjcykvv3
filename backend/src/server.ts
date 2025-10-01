@@ -8,10 +8,15 @@ import cors from 'cors';
 import bodyParser from 'body-parser';
 
 // IMPORTANT: Use .js in import specifiers (NodeNext + ESM)
+// server.ts
 import { apiRoutes } from './routes/api.js';
-import { scoreWritingRouter } from './routes/score-writing.js';
 import { gatekeeperRouter } from './routes/gatekeeper.js';
+import { scoreWritingRouter } from './routes/score-writing.js';
 import { detailedScoringRouter } from './routes/detailed-scoring.js';
+
+// routes/api.ts (note capital W to match the filename!)
+import { scoreWriting } from '../utils/scoreWriting.js';
+
 
 // __dirname shim for ESM
 const __filename = fileURLToPath(import.meta.url);
