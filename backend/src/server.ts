@@ -9,9 +9,9 @@ import bodyParser from 'body-parser';
 
 // ---- Route imports (ESM / NodeNext: use .js in import specifiers) ----
 import { apiRoutes } from './routes/api.js';                      // remove if you don't have this file
-import { scoreWritingRouter } from './routes/score-writing.js';
-import { gatekeeperRouter } from './routes/gatekeeper.js';
-import { detailedScoringRouter } from './routes/detailed-scoring.js';
+import { scoreWritingRouter } from './routes/score-writing.ts';
+import { gatekeeperRouter } from './routes/gatekeeper.ts';
+import { detailedScoringRouter } from './routes/detailed-scoring.ts';
 
 // ---- __dirname shim for ESM ----
 const __filename = fileURLToPath(import.meta.url);
