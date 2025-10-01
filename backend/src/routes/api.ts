@@ -7,9 +7,10 @@ import { v4 as uuidv4 } from 'uuid';
 // IMPORTANT: paths are relative to src/routes/
 // If your helper files are at backend/src/scoreWriting.ts etc,
 // go up one level (../) and include the .ts extension for NodeNext.
-import { scoreWriting } from '../scoreWriting.ts';
-import { sendEmailReport } from '../emailService.ts';
-import { generatePdfReport } from '../pdfService.ts';
+import { scoreWriting } from '../utils/scoreWriting.ts';
+import { sendEmailReport } from '../utils/emailService.ts';
+import { generatePdfReport } from '../utils/pdfService.ts';
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
