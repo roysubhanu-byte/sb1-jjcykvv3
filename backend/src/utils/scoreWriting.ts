@@ -22,58 +22,44 @@ interface WritingScore {
 
 export async function scoreWriting(essayText: string): Promise<WritingScore> {
   try {
-    // Debug log to check API key availability
-    console.log('DEBUG (inside scoreWriting function): OPENAI_API_KEY value:', process.env.OPENAI_API_KEY ? 'Configured (starts with ' + process.env.OPENAI_API_KEY.substring(0, 5) + '...)' : 'Missing or Empty');
+    console.log(
+      'DEBUG (scoreWriting): OPENAI_API_KEY:',
+      process.env.OPENAI_API_KEY ? '(configured)' : '(missing)'
+    );
 
+    // If no key, return a deterministic fallback with ALL required fields
     if (!process.env.OPENAI_API_KEY) {
-      // Fallback scoring if no API key
       return {
         tr: 6.0,
         cc: 6.0,
         lr: 6.0,
         gra: 6.0,
         overall: 6.0,
-        feedback: "AI scoring unavailable. This is a sample score.",
-        actions: ["Practice more essays", "Focus on grammar", "Expand vocabulary"],
+        feedback:
+          'AI scoring unavailable on server. Returning a sample score for development.',
+        actions: [
+          'Write one timed essay (40 min).',
+          'Plan 5 minutes before writing.',
+          'Review and fix grammar after writing.'
+        ],
         rewrites: [],
         grammar_table: []
       };
     }
 
-    // Initialize OpenAI client here, inside the function
-    const openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    const systemPrompt = `You are an IELTS Writing examiner. Score TR (Task Response), CC (Coherence & Cohesion), LR (Lexical Resource), GRA (Grammatical Range & Accuracy) on a scale of 0-9 in 0.5 increments. Return JSON:
-
-Be EXTREMELY STRICT and realistic in your scoring. Use official IELTS band descriptors precisely:
-- Band 4: Basic competence, limited vocabulary, frequent grammatical errors
-- Band 5: Modest competence, adequate vocabulary, some grammatical errors
-- Band 6: Competent user, adequate vocabulary range, occasional errors
-- Band 7: Good user, flexible vocabulary, few errors
-- Band 8: Very good user, wide vocabulary range, rare errors
-- Band 9: Expert user, very wide vocabulary, virtually no errors
-
-Apply strict penalties for:
-- Insufficient word count (under 150 for Task 1, under 250 for Task 2)
-- Repetitive language or ideas: Reduce by 1-2 bands
-- Copy-paste or memorized content: Maximum band 4.0
-- Basic vocabulary only: Maximum band 5.0
-- Poor essay structure: Reduce by 1 band
-- Off-topic responses
-- Grammatical errors throughout: Maximum band 4.0
-
+    const systemPrompt = `You are an IELTS Writing examiner. Score TR, CC, LR, GRA using IELTS public band descriptors. Be STRICT and return ONLY JSON with keys:
 {
   "tr": number,
-  "cc": number, 
+  "cc": number,
   "lr": number,
   "gra": number,
   "overall": number,
   "feedback": "string",
-  "actions": ["short imperative sentences"],
-  "rewrites": [{"from": "original text", "to": "improved text", "reason": "explanation"}],
-  "grammar_table": [{"issue": "grammar issue", "example": "incorrect example", "fix": "corrected version"}]
+  "actions": ["short imperative items"],
+  "rewrites": [{"from":"...","to":"...","reason":"..."}],
+  "grammar_table": [{"issue":"...","example":"...","fix":"..."}]
 }`;
 
     const completion = await openai.chat.completions.create({
@@ -83,39 +69,62 @@ Apply strict penalties for:
         { role: 'user', content: `Score this IELTS Writing Task 2 essay:\n\n${essayText}` }
       ],
       temperature: 0.2,
-      response_format: { type: "json_object" }
+      response_format: { type: 'json_object' }
     });
 
-    const response = completion.choices[0]?.message?.content;
-    if (!response) {
-      throw new Error('No response from OpenAI');
-    }
+    const content = completion.choices[0]?.message?.content;
+    if (!content) throw new Error('No response content from OpenAI');
 
-    const parsed = JSON.parse(response);
-    
-    // Validate and ensure all required fields
-    return {
-      tr: parsed.tr || 6.0,
-      cc: parsed.cc || 6.0,
-      lr: parsed.lr || 6.0,
-      gra: parsed.gra || 6.0,
-      overall: parsed.overall || 6.0,
-      feedback: parsed.feedback || 'Good effort on this essay.',
-      actions: parsed.actions || ['Practice more essays', 'Focus on structure'],
-      rewrites: parsed.rewrites || [],
-      grammar_table: parsed.grammar_table || []
+    const parsed = JSON.parse(content);
+
+    // Ensure all fields exist with sensible defaults
+    const result: WritingScore = {
+      tr: numberOr(parsed.tr, 6.0),
+      cc: numberOr(parsed.cc, 6.0),
+      lr: numberOr(parsed.lr, 6.0),
+      gra: numberOr(parsed.gra, 6.0),
+      overall: numberOr(parsed.overall, average4(parsed.tr, parsed.cc, parsed.lr, parsed.gra, 6.0)),
+      feedback: stringOr(parsed.feedback, 'Good effort. Focus on structure and clarity.'),
+      actions: arrayOr(parsed.actions, ['Plan 5 minutes', 'Write clearly structured paragraphs']),
+      rewrites: arrayOr(parsed.rewrites, []),
+      grammar_table: arrayOr(parsed.grammar_table, [])
     };
 
-  } catch (error) {
-    console.error('Error scoring writing:', error);
-    
-    // Fallback scoring
+    return result;
+  } catch (err) {
+    console.error('Error in scoreWriting:', err);
+
+    // Fallback MUST include every property from WritingScore
     return {
       tr: 6.0,
       cc: 6.0,
       lr: 6.0,
       gra: 6.0,
       overall: 6.0,
-      }
+      feedback:
+        'Temporary scoring fallback due to an internal error. Try again shortly.',
+      actions: [
+        'Rewrite introduction with a clear thesis.',
+        'Add examples to each body paragraph.',
+        'Proofread for grammar mistakes.'
+      ],
+      rewrites: [],
+      grammar_table: []
+    };
   }
+}
+
+// ---------- tiny helpers ----------
+function numberOr(v: any, d: number): number {
+  return typeof v === 'number' ? v : d;
+}
+function stringOr(v: any, d: string): string {
+  return typeof v === 'string' ? v : d;
+}
+function arrayOr<T>(v: any, d: T[]): T[] {
+  return Array.isArray(v) ? v : d;
+}
+function average4(a: any, b: any, c: any, d: any, def = 6): number {
+  const vals = [a, b, c, d].map((x) => (typeof x === 'number' ? x : def));
+  return Math.round(((vals[0] + vals[1] + vals[2] + vals[3]) / 4) * 2) / 2;
 }
