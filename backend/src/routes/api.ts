@@ -5,7 +5,8 @@ import fs from 'fs-extra';
 import { v4 as uuidv4 } from 'uuid';
 
 // IMPORTANT: use .js specifiers and exact filename casing
-import { scoreWriting } from '../utils/scorewriting.js';
+import { scoreWriting } from '../utils/scoreWriting.js';
+
 import { sendEmailReport } from '../utils/emailService.js';
 import { generatePdfReport } from '../utils/pdfService.js';
 
