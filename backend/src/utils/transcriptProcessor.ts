@@ -12,7 +12,8 @@ function deduplicate(text: string): string {
     .trim()
     .split(/([.!?])\s+/)
     .reduce<string[]>((acc, part, idx, arr) => {
-      const chunk = (part + (/[.!?]/.test(arr[idx + 1] || '') ? (arr[idx + 1] || '') : '')).trim();
+      const nextPunct = /[.!?]/.test(arr[idx + 1] || '') ? (arr[idx + 1] || '') : '';
+      const chunk = (part + nextPunct).trim();
       if (!chunk) return acc;
       if (acc.length === 0 || acc[acc.length - 1].toLowerCase() !== chunk.toLowerCase()) {
         acc.push(chunk);
@@ -46,9 +47,15 @@ export function processTranscript(rawText: string, segments: Segment[]) {
   const sentenceCountVal = sentenceCount(text);
 
   // Estimate duration from segments (fallback if missing)
-  const totalDuration = segments?.length
-    ? Math.max(0, (segments.at(-1)?.end ?? 0) - (segments[0]?.start ?? 0))
-    : Math.max(wordCount / 2.8, 1);
+  let totalDuration = 0;
+  if (segments && segments.length > 0) {
+    const firstStart = segments[0]?.start ?? 0;
+    const lastEnd = segments[segments.length - 1]?.end ?? 0; // ← no .at()
+    totalDuration = Math.max(0, lastEnd - firstStart);
+  } else {
+    // crude fallback: ~2.8 words/sec speaking rate
+    totalDuration = Math.max(wordCount / 2.8, 1);
+  }
 
   // Pauses
   let longPauseCount = 0;
@@ -81,7 +88,7 @@ export function processTranscript(rawText: string, segments: Segment[]) {
       speechDuration: Number(totalDuration.toFixed(2)),
       articulationRate: Number(articulationRate.toFixed(2)),
       wordCount,
-      sentenceCount: sentenceCountVal
-    }
+      sentenceCount: sentenceCountVal,
+    },
   };
 }
