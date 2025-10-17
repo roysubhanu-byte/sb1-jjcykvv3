@@ -24,7 +24,7 @@ interface GatekeeperResponse {
   };
 }
 
-router.post('/check', async (req, res) => {
+router.post('/gatekeeper', async (req, res) => {
   try {
     const {
       task_type,
@@ -33,20 +33,23 @@ router.post('/check', async (req, res) => {
       min_words_override
     }: GatekeeperRequest = req.body;
 
+    // Validate input
     if (!task_type || !prompt_text || !candidate_text) {
-      return res.status(400).json({ 
-        error: 'Missing required fields: task_type, prompt_text, candidate_text' 
+      return res.status(400).json({
+        error: 'Missing required fields: task_type, prompt_text, candidate_text'
       });
     }
 
+    // Check API key
     if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({ 
-        error: 'OpenAI API key not configured on server' 
+      return res.status(500).json({
+        error: 'OpenAI API key not configured on server'
       });
     }
 
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+    // System prompt
     const systemPrompt = `You are an IELTS task gatekeeper. Decide if the candidate's response is on-topic and eligible for scoring.
 
 Rules:
@@ -99,7 +102,9 @@ Now produce ONLY the JSON.`;
     });
 
     const responseText = completion.choices[0]?.message?.content;
-    if (!responseText) return res.status(500).json({ error: 'No response from gatekeeper AI' });
+    if (!responseText) {
+      return res.status(500).json({ error: 'No response from gatekeeper AI' });
+    }
 
     let gatekeeperResult: GatekeeperResponse;
     try {
