@@ -10,7 +10,7 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
-    "types": ["node", "express", "cors", "multer", "pdfkit", "fs-extra", "morgan"]
+    "types": ["node", "express", "cors", "multer", "morgan"]
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist"]
