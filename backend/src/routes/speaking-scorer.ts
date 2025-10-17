@@ -26,15 +26,19 @@ interface SpeakingScoreRequest {
 router.post('/score', async (req, res) => {
   try {
     const { transcript, audioFeatures, part, attemptId }: SpeakingScoreRequest = req.body;
-    if (!transcript || !audioFeatures) return res.status(400).json({ error: 'Missing transcript or audioFeatures' });
-    if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: 'OpenAI API key not configured' });
+
+    if (!transcript || !audioFeatures) {
+      return res.status(400).json({ error: 'Missing transcript or audioFeatures' });
+    }
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(500).json({ error: 'OpenAI API key not configured' });
+    }
 
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     const systemPrompt = `You are an EXTREMELY STRICT IELTS Speaking examiner. Use official band descriptors. Cap all bands at 6.5 for diagnostic.
 
 Return ONLY JSON with:
-
 {
   "bands": {
     "fluency_coherence": number,
@@ -46,15 +50,15 @@ Return ONLY JSON with:
   "detailed_analysis": {
     "fluency": { "wpm": number, "wpm_band": "excellent|good|acceptable|weak", "filled_pauses": number, "pause_quality": "minimal|acceptable|excessive", "hesitation_level":"low|moderate|high" },
     "lexical": { "unique_words": number, "c2_words": string[], "phrasal_verbs": string[], "collocations": string[], "repetition_rate": number, "lexical_diversity": number },
-    "grammar": { "complex_structures": number, "error_count": number, "error_examples": [{"error": "...","excerpt":"...","fix":"..."}], "sentence_variety": "excellent|good|limited|poor" },
+    "grammar": { "complex_structures": number, "error_count": number, "error_examples": [{"error":"...","excerpt":"...","fix":"..."}], "sentence_variety": "excellent|good|limited|poor" },
     "pronunciation": { "articulation_rate": number, "clarity_estimate": "excellent|good|acceptable|unclear", "intonation_notes": string[] },
     "coherence": { "linking_devices": string[], "topic_development": string, "discourse_structure": "clear|adequate|weak" }
   },
   "penalties_applied": {
-    "fluency_penalties": [{"reason": "...","penalty": 0.5}],
-    "lexical_penalties": [{"reason": "...","penalty": 0.5}],
-    "grammar_penalties": [{"reason": "...","penalty": 0.2}],
-    "pronunciation_penalties": [{"reason": "...","penalty": 0.5}]
+    "fluency_penalties": [{"reason":"...","penalty":0.5}],
+    "lexical_penalties": [{"reason":"...","penalty":0.5}],
+    "grammar_penalties": [{"reason":"...","penalty":0.2}],
+    "pronunciation_penalties": [{"reason":"...","penalty":0.5}]
   },
   "rewards_applied": {
     "lexical_rewards": [{"reason":"...","reward":0.5}],
@@ -69,9 +73,9 @@ Return ONLY JSON with:
       audioFeatures,
       part,
       task_context:
-        part === 1 ? 'Introduction and Interview' :
-        part === 2 ? 'Individual Long Turn (2 minutes)' :
-        'Two-way Discussion'
+        part === 1 ? 'Introduction and Interview'
+        : part === 2 ? 'Individual Long Turn (2 minutes)'
+        : 'Two-way Discussion'
     });
 
     const completion = await openai.chat.completions.create({
@@ -85,10 +89,10 @@ Return ONLY JSON with:
       response_format: { type: 'json_object' }
     });
 
-    const json = completion.choices[0]?.message?.content;
-    if (!json) return res.status(500).json({ error: 'No response from AI' });
+    const content = completion.choices[0]?.message?.content;
+    if (!content) return res.status(500).json({ error: 'No response from AI' });
 
-    let result = JSON.parse(json);
+    const result = JSON.parse(content);
 
     // Round to 0.5 and cap at 6.5
     const rt = (n: number) => Math.min(6.5, Math.round(n * 2) / 2);
@@ -100,7 +104,7 @@ Return ONLY JSON with:
       (result.bands.fluency_coherence + result.bands.lexical_resource + result.bands.grammatical_range + result.bands.pronunciation) / 4
     );
 
-    // Save if attemptId present
+    // Save to Supabase if requested
     if (attemptId) {
       const supabase = createClient(
         process.env.SUPABASE_URL || '',
