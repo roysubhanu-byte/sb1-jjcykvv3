@@ -24,7 +24,7 @@ interface GatekeeperResponse {
   };
 }
 
-router.post('/gatekeeper', async (req, res) => {
+router.post('/check', async (req, res) => {
   try {
     const {
       task_type,
@@ -33,7 +33,6 @@ router.post('/gatekeeper', async (req, res) => {
       min_words_override
     }: GatekeeperRequest = req.body;
 
-    // Validation
     if (!task_type || !prompt_text || !candidate_text) {
       return res.status(400).json({ 
         error: 'Missing required fields: task_type, prompt_text, candidate_text' 
@@ -46,12 +45,8 @@ router.post('/gatekeeper', async (req, res) => {
       });
     }
 
-    // Initialize OpenAI client
-    const openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    // Construct the gatekeeper prompt
     const systemPrompt = `You are an IELTS task gatekeeper. Decide if the candidate's response is on-topic and eligible for scoring.
 
 Rules:
@@ -92,51 +87,36 @@ Now produce ONLY the JSON.`;
       min_words_override
     });
 
-    // Call OpenAI
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
       ],
-      temperature: 0.1, // Very low for consistent gatekeeper decisions
-      max_tokens: 500,  // Smaller response expected
-      response_format: { type: "json_object" }
+      temperature: 0.1,
+      max_tokens: 500,
+      response_format: { type: 'json_object' }
     });
 
     const responseText = completion.choices[0]?.message?.content;
-    if (!responseText) {
-      return res.status(500).json({ 
-        error: 'No response from gatekeeper AI' 
-      });
-    }
+    if (!responseText) return res.status(500).json({ error: 'No response from gatekeeper AI' });
 
-    // Parse JSON response
     let gatekeeperResult: GatekeeperResponse;
     try {
       gatekeeperResult = JSON.parse(responseText);
-    } catch (parseError) {
+    } catch {
       console.error('Gatekeeper JSON parse failed:', responseText);
-      return res.status(500).json({ 
-        error: 'Invalid response format from gatekeeper AI' 
-      });
+      return res.status(500).json({ error: 'Invalid response format from gatekeeper AI' });
     }
 
-    // Validate response structure
     if (!gatekeeperResult.result || !gatekeeperResult.reason || !gatekeeperResult.measures) {
-      return res.status(500).json({ 
-        error: 'Incomplete gatekeeper response' 
-      });
+      return res.status(500).json({ error: 'Incomplete gatekeeper response' });
     }
 
-    // Return the gatekeeper result
     res.json(gatekeeperResult);
-
   } catch (error) {
     console.error('Error in gatekeeper route:', error);
-    res.status(500).json({ 
-      error: 'Internal server error during gatekeeper check' 
-    });
+    res.status(500).json({ error: 'Internal server error during gatekeeper check' });
   }
 });
 
