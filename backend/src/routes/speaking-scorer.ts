@@ -1,3 +1,4 @@
+// backend/src/routes/speaking-scorer.ts
 import express from 'express';
 import OpenAI from 'openai';
 import { createClient } from '@supabase/supabase-js';
@@ -25,20 +26,24 @@ interface SpeakingScoreRequest {
 
 router.post('/score', async (req, res) => {
   try {
-    const { transcript, audioFeatures, part, attemptId }: SpeakingScoreRequest = req.body;
+    const { transcript, audioFeatures, part, attemptId } = req.body as SpeakingScoreRequest;
 
-    if (!transcript || !audioFeatures) {
-      return res.status(400).json({ error: 'Missing transcript or audioFeatures' });
+    // Basic validation
+    if (!transcript || !audioFeatures || !part) {
+      return res.status(400).json({ error: 'Missing transcript, audioFeatures, or part' });
+    }
+    if (![1, 2, 3].includes(Number(part))) {
+      return res.status(400).json({ error: 'Invalid part. Must be 1, 2, or 3.' });
     }
     if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({ error: 'OpenAI API key not configured' });
+      return res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
     }
 
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    const systemPrompt = `You are an EXTREMELY STRICT IELTS Speaking examiner. Use official band descriptors. Cap all bands at 6.5 for diagnostic.
+    const systemPrompt = `You are an EXTREMELY STRICT IELTS Speaking examiner. Use ONLY official band descriptors. Cap all bands at 6.5 for this diagnostic. Return STRICT JSON only.
 
-Return ONLY JSON with:
+Schema:
 {
   "bands": {
     "fluency_coherence": number,
@@ -48,11 +53,11 @@ Return ONLY JSON with:
   },
   "overall": number,
   "detailed_analysis": {
-    "fluency": { "wpm": number, "wpm_band": "excellent|good|acceptable|weak", "filled_pauses": number, "pause_quality": "minimal|acceptable|excessive", "hesitation_level":"low|moderate|high" },
+    "fluency": { "wpm": number, "wpm_band": "excellent"|"good"|"acceptable"|"weak", "filled_pauses": number, "pause_quality": "minimal"|"acceptable"|"excessive", "hesitation_level":"low"|"moderate"|"high" },
     "lexical": { "unique_words": number, "c2_words": string[], "phrasal_verbs": string[], "collocations": string[], "repetition_rate": number, "lexical_diversity": number },
-    "grammar": { "complex_structures": number, "error_count": number, "error_examples": [{"error":"...","excerpt":"...","fix":"..."}], "sentence_variety": "excellent|good|limited|poor" },
-    "pronunciation": { "articulation_rate": number, "clarity_estimate": "excellent|good|acceptable|unclear", "intonation_notes": string[] },
-    "coherence": { "linking_devices": string[], "topic_development": string, "discourse_structure": "clear|adequate|weak" }
+    "grammar": { "complex_structures": number, "error_count": number, "error_examples": [{"error":"...","excerpt":"...","fix":"..."}], "sentence_variety": "excellent"|"good"|"limited"|"poor" },
+    "pronunciation": { "articulation_rate": number, "clarity_estimate": "excellent"|"good"|"acceptable"|"unclear", "intonation_notes": string[] },
+    "coherence": { "linking_devices": string[], "topic_development": string, "discourse_structure": "clear"|"adequate"|"weak" }
   },
   "penalties_applied": {
     "fluency_penalties": [{"reason":"...","penalty":0.5}],
@@ -92,25 +97,40 @@ Return ONLY JSON with:
     const content = completion.choices[0]?.message?.content;
     if (!content) return res.status(500).json({ error: 'No response from AI' });
 
-    const result = JSON.parse(content);
+    let result: any;
+    try {
+      result = JSON.parse(content);
+    } catch {
+      return res.status(500).json({ error: 'Invalid JSON from AI' });
+    }
 
     // Round to 0.5 and cap at 6.5
-    const rt = (n: number) => Math.min(6.5, Math.round(n * 2) / 2);
-    result.bands.fluency_coherence = rt(result.bands.fluency_coherence);
-    result.bands.lexical_resource = rt(result.bands.lexical_resource);
-    result.bands.grammatical_range = rt(result.bands.grammatical_range);
-    result.bands.pronunciation = rt(result.bands.pronunciation);
-    result.overall = rt(
-      (result.bands.fluency_coherence + result.bands.lexical_resource + result.bands.grammatical_range + result.bands.pronunciation) / 4
+    const roundHalf = (n: number) => Math.round(n * 2) / 2;
+    const cap65 = (n: number) => Math.min(6.5, n);
+
+    result.bands = result.bands || {};
+    result.bands.fluency_coherence = cap65(roundHalf(result.bands.fluency_coherence ?? 5.5));
+    result.bands.lexical_resource  = cap65(roundHalf(result.bands.lexical_resource ?? 5.5));
+    result.bands.grammatical_range = cap65(roundHalf(result.bands.grammatical_range ?? 5.5));
+    result.bands.pronunciation     = cap65(roundHalf(result.bands.pronunciation ?? 5.5));
+
+    result.overall = cap65(
+      roundHalf(
+        ((result.bands.fluency_coherence ?? 5.5) +
+         (result.bands.lexical_resource ?? 5.5) +
+         (result.bands.grammatical_range ?? 5.5) +
+         (result.bands.pronunciation ?? 5.5)) / 4
+      )
     );
 
-    // Save to Supabase if requested
+    // Optional: save to Supabase
     if (attemptId) {
       const supabase = createClient(
         process.env.SUPABASE_URL || '',
         process.env.SUPABASE_SERVICE_ROLE_KEY || '',
         { auth: { autoRefreshToken: false, persistSession: false } }
       );
+
       const { error } = await supabase
         .from('speaking_attempts')
         .upsert(
@@ -120,16 +140,21 @@ Return ONLY JSON with:
             wpm: audioFeatures.wpm,
             filled_pause_rate: audioFeatures.fillerPer100,
             band: result.overall,
-            feedback_json: result
+            feedback_json: result,
+            created_at: new Date().toISOString()
           },
           { onConflict: 'attempt_id' }
         );
-      if (error) console.error('Supabase insert error:', error);
+
+      if (error) {
+        // Don’t block the response—just log it
+        console.error('Supabase insert error (speaking_attempts):', error);
+      }
     }
 
     res.json(result);
   } catch (err) {
-    console.error('speaking score error:', err);
+    console.error('speaking-scorer error:', err);
     res.status(500).json({ error: 'Scoring failed' });
   }
 });
