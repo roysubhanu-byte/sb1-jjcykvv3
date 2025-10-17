@@ -17,6 +17,12 @@ interface DetailedScoringRequest {
     cohesive_devices_per_100w: number;
     lexical_diversity_ttr_0_1: number;
     rare_academic_terms: string[];
+    c2_words?: string[];
+    c2_words_count?: number;
+    phrasal_verbs?: string[];
+    phrasal_verbs_count?: number;
+    complex_grammar_count?: number;
+    linking_words_count?: number;
     grammar_error_density_per_100w: number;
     template_cues: string[];
     synonym_inflation_score_0_100: number;
@@ -38,14 +44,20 @@ interface DetailedScoringResponse {
     word_count: number;
     paragraph_count: number;
     topic_relevance_0_100: number;
-    task_requirements: { 
-      addresses_all_parts: boolean; 
-      clear_position: boolean; 
+    task_requirements: {
+      addresses_all_parts: boolean;
+      clear_position: boolean;
       overview_or_conclusion_present: boolean;
     };
     cohesive_devices_per_100w: number;
     lexical_diversity_ttr_0_1: number;
     rare_academic_terms: string[];
+    c2_words?: string[];
+    c2_words_count?: number;
+    phrasal_verbs?: string[];
+    phrasal_verbs_count?: number;
+    complex_grammar_count?: number;
+    linking_words_count?: number;
     grammar_error_density_per_100w: number;
     sentence_variety_counts: { simple: number; compound: number; complex: number };
     template_cues: string[];
@@ -63,6 +75,12 @@ interface DetailedScoringResponse {
     CC: string[];
     LR: string[];
     GRA: string[];
+  };
+  signals?: {
+    lexical_ttr_0_1: number;
+    template_count: number;
+    off_topic_percent: number;
+    grammar_error_density_per_100w: number;
   };
   confidence: {
     band_low: number;
@@ -137,9 +155,26 @@ Pre-calculated features (use these for accuracy):
 - cohesive_devices_per_100w: ${measured_features.cohesive_devices_per_100w}
 - lexical_diversity_ttr_0_1: ${measured_features.lexical_diversity_ttr_0_1}
 - rare_academic_terms: ${JSON.stringify(measured_features.rare_academic_terms)}
+- c2_words_count: ${measured_features.c2_words_count || 0} (C2-level vocabulary used)
+- c2_words: ${JSON.stringify(measured_features.c2_words || [])}
+- phrasal_verbs_count: ${measured_features.phrasal_verbs_count || 0} (natural expressions)
+- phrasal_verbs: ${JSON.stringify(measured_features.phrasal_verbs || [])}
+- complex_grammar_count: ${measured_features.complex_grammar_count || 0} (advanced structures like modal perfects, conditionals)
+- linking_words_count: ${measured_features.linking_words_count || measured_features.cohesive_devices_per_100w} (cohesive devices)
 - grammar_error_density_per_100w: ${measured_features.grammar_error_density_per_100w}
 - template_cues: ${JSON.stringify(measured_features.template_cues)}
 - synonym_inflation_score_0_100: ${measured_features.synonym_inflation_score_0_100}
+
+IMPORTANT Lexical Resource (LR) Scoring Guidelines:
+- C2 words (${measured_features.c2_words_count || 0}): Award higher LR bands (6.0-6.5) if 5+ C2 words used appropriately
+- Phrasal verbs (${measured_features.phrasal_verbs_count || 0}): Natural use of phrasal verbs indicates strong vocabulary
+- Rare academic terms: Shows advanced vocabulary range
+- Consider both quantity AND appropriacy of advanced vocabulary
+
+IMPORTANT Grammar (GRA) Scoring Guidelines:
+- Complex grammar structures (${measured_features.complex_grammar_count || 0}): Higher GRA bands (6.0-6.5) require 3+ complex structures
+- Complex structures include: modal perfects, third conditionals, perfect participles, non-defining relative clauses
+- Balance complexity with accuracy - errors reduce the band score
 
 Output JSON schema:
 {
@@ -160,6 +195,12 @@ Output JSON schema:
     "cohesive_devices_per_100w": number,
     "lexical_diversity_ttr_0_1": number,
     "rare_academic_terms": [ "string", ... ],
+    "c2_words": [ "string", ... ],
+    "c2_words_count": number,
+    "phrasal_verbs": [ "string", ... ],
+    "phrasal_verbs_count": number,
+    "complex_grammar_count": number,
+    "linking_words_count": number,
     "grammar_error_density_per_100w": number,
     "sentence_variety_counts": { "simple": number, "compound": number, "complex": number },
     "template_cues": [ "string", ... ],
@@ -173,10 +214,16 @@ Output JSON schema:
     ]
   },
   "evidence_quotes": {
-    "TR": [ "short snippet from essay proving/violating TR" ],
-    "CC": [ "…" ],
-    "LR": [ "…" ],
-    "GRA": [ "…" ]
+    "TR": [ "2-3 SHORT quoted phrases (5-10 words each) from essay showing TR strengths/weaknesses" ],
+    "CC": [ "2-3 SHORT quoted phrases showing cohesion issues or successes" ],
+    "LR": [ "2-3 SHORT quoted phrases showing vocabulary choices (good or problematic)" ],
+    "GRA": [ "2-3 SHORT quoted phrases showing grammar errors or successes" ]
+  },
+  "signals": {
+    "lexical_ttr_0_1": number (actual computed TTR),
+    "template_count": number (count of template phrases found),
+    "off_topic_percent": number (0-100, how off-topic),
+    "grammar_error_density_per_100w": number (errors per 100 words)
   },
   "confidence": {
     "band_low": number,
@@ -193,6 +240,8 @@ Process:
 4) Set confidence range wider if features disagree.
 5) If essay clearly off-prompt, return result="reject_off_topic". If too short, result="needs_rewrite".
 6) Keep language concise, concrete, and tied to descriptors.
+7) IMPORTANT: Extract 2-3 SHORT quoted phrases (5-10 words each) from the candidate's actual essay for each criterion (TR/CC/LR/GRA). These quotes must be VERBATIM text from the essay that justify the band deductions or strengths.
+8) Populate signals object with concrete numeric values: lexical_ttr_0_1 (use provided), template_count (count template_cues length), off_topic_percent (100 - topic_relevance_0_100), grammar_error_density_per_100w (use provided).
 
 Now output ONLY the JSON.`;
 
@@ -258,9 +307,9 @@ Now output ONLY the JSON.`;
     const roundToHalf = (num: number) => Math.round(num * 2) / 2;
     overall_band = roundToHalf(overall_band);
     criterion_bands.TR = roundToHalf(criterion_bands.TR);
-    criterion_bands.CC = Math.round(criterion_bands.CC * 2) / 2;
-    criterion_bands.LR = Math.round(criterion_bands.LR * 2) / 2;
-    criterion_bands.GRA = Math.round(criterion_bands.GRA * 2) / 2;
+    criterion_bands.CC = roundToHalf(criterion_bands.CC);
+    criterion_bands.LR = roundToHalf(criterion_bands.LR);
+    criterion_bands.GRA = roundToHalf(criterion_bands.GRA);
 
     // Update the result with processed values
     const finalResult: DetailedScoringResponse = {
@@ -324,3 +373,4 @@ Now output ONLY the JSON.`;
 });
 
 export { router as detailedScoringRouter };
+
