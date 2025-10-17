@@ -1,8 +1,8 @@
-     import express, { Request, Response } from 'express';
+import express, { Request, Response } from 'express';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs-extra';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 
 // keep .js extensions because we compile as NodeNext ESM
 import { scoreWriting } from '../utils/scoreWriting.js';
@@ -83,7 +83,7 @@ router.post('/attempts/complete', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Missing required data' });
     }
 
-    const attemptId = uuidv4();
+    const attemptId = randomUUID();
 
     const listeningBand = computeListeningBand(listening.raw);
 
