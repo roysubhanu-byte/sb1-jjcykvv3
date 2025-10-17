@@ -1,27 +1,37 @@
-// backend/src/server.ts
-import express from 'express';
+import express, { Request, Response } from 'express';
 import cors from 'cors';
-
-import { apiRouter } from './routes/api';
-import { gatekeeperRouter } from './routes/gatekeeper';
-import { scoreWritingRouter } from './routes/score-writing';
-import { detailedScoringRouter } from './routes/detailed-scoring';
-import { speakingAsrRouter } from './routes/speaking-asr';
-import { speakingScorerRouter } from './routes/speaking-scorer';
+import { apiRouter } from './routes/api.js';
 
 const app = express();
+const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
 
 app.use(cors());
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '3mb' }));
 
+// health
+app.get('/health', (_req: Request, res: Response) => {
+  res.json({ ok: true });
+});
+
+// mount all API routes under /api
 app.use('/api', apiRouter);
-app.use('/api/gatekeeper', gatekeeperRouter);
-app.use('/api/score-writing', scoreWritingRouter);
-app.use('/api/detailed-scoring', detailedScoringRouter);
-app.use('/api/speaking/asr', speakingAsrRouter);
-app.use('/api/speaking/score', speakingScorerRouter);
 
-const port = process.env.PORT || 3001;
-app.listen(port, () => console.log(`API listening on ${port}`));
+// 404
+app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
 
+// error handler (last)
+app.use(
+  (
+    err: any,
+    _req: Request,
+    res: Response,
+    _next: express.NextFunction
+  ) => {
+    console.error('UNHANDLED ERROR:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+);
 
+app.listen(PORT, () => {
+  console.log(`Server listening on :${PORT}`);
+});
