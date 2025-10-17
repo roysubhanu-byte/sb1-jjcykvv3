@@ -1,15 +1,10 @@
-/**
- * Transcript post-processing:
- * - deduplicate repeated lines (ASR sometimes repeats)
- * - compute audio features for scoring
- */
-
 export interface Segment {
   start?: number;
   end?: number;
   text?: string;
 }
 
+// Remove repeated sentences/phrases and normalize punctuation
 function deduplicate(text: string): string {
   if (!text) return '';
   const parts = text
@@ -28,26 +23,19 @@ function deduplicate(text: string): string {
   return parts.join(' ').replace(/\s+([,.!?;:])/g, '$1');
 }
 
-function countFillers(text: string): { count: number; fillers: string[] } {
-  const fillerWords = ['um', 'uh', 'er', 'erm', 'like', 'you know', 'i mean', 'sort of', 'kind of'];
-  const lowered = text.toLowerCase();
-  let count = 0;
-  const found: string[] = [];
-
-  for (const f of fillerWords) {
-    const re = new RegExp(`\\b${f.replace(' ', '\\s+')}\\b`, 'g');
-    const matches = lowered.match(re);
-    if (matches?.length) {
-      count += matches.length;
-      found.push(`${f}×${matches.length}`);
-    }
-  }
-  return { count, fillers: found };
+function sentenceCount(text: string): number {
+  return text.split(/[.!?]+/).map(s => s.trim()).filter(Boolean).length;
 }
 
-function sentenceCount(text: string): number {
-  const s = text.split(/[.!?]+/).map(x => x.trim()).filter(Boolean);
-  return s.length;
+function countFillers(text: string) {
+  const list = ['um', 'uh', 'er', 'erm', 'like', 'you know', 'i mean', 'sort of', 'kind of'];
+  const lower = text.toLowerCase();
+  let count = 0;
+  for (const f of list) {
+    const re = new RegExp(`\\b${f.replace(' ', '\\s+')}\\b`, 'g');
+    count += lower.match(re)?.length || 0;
+  }
+  return count;
 }
 
 export function processTranscript(rawText: string, segments: Segment[]) {
@@ -55,40 +43,32 @@ export function processTranscript(rawText: string, segments: Segment[]) {
 
   const words = text.split(/\s+/).filter(Boolean);
   const wordCount = words.length;
-  const sentCount = sentenceCount(text);
+  const sentenceCountVal = sentenceCount(text);
 
-  // estimate timings
-  const totalDuration =
-    segments?.length ? (segments.at(-1)?.end ?? 0) - (segments[0]?.start ?? 0) : Math.max(wordCount / 2.8, 1); // fallback
-
-  // Features
-  const wpm = totalDuration > 0 ? (wordCount / totalDuration) * 60 : 0;
+  // Estimate duration from segments (fallback if missing)
+  const totalDuration = segments?.length
+    ? Math.max(0, (segments.at(-1)?.end ?? 0) - (segments[0]?.start ?? 0))
+    : Math.max(wordCount / 2.8, 1);
 
   // Pauses
   let longPauseCount = 0;
   let pauseCount = 0;
-  let pauseDurations: number[] = [];
-
-  for (let i = 1; i < segments.length; i++) {
-    const prevEnd = segments[i - 1]?.end ?? 0;
-    const curStart = segments[i]?.start ?? 0;
-    const gap = Math.max(0, curStart - prevEnd);
+  const pauseDur: number[] = [];
+  for (let i = 1; i < (segments?.length || 0); i++) {
+    const gap = Math.max(0, (segments[i].start ?? 0) - (segments[i - 1].end ?? 0));
     if (gap > 0.2) {
       pauseCount++;
-      pauseDurations.push(gap);
+      pauseDur.push(gap);
       if (gap >= 0.8) longPauseCount++;
     }
   }
-  const meanPauseDuration = pauseDurations.length
-    ? pauseDurations.reduce((a, b) => a + b, 0) / pauseDurations.length
-    : 0;
+  const meanPauseDuration = pauseDur.length ? pauseDur.reduce((a, b) => a + b, 0) / pauseDur.length : 0;
 
-  // Fillers
-  const { count: fillerCount } = countFillers(text);
+  // Features
+  const wpm = totalDuration > 0 ? (wordCount / totalDuration) * 60 : 0;
+  const fillerCount = countFillers(text);
   const fillerPer100 = wordCount ? (fillerCount / wordCount) * 100 : 0;
-
-  // Articulation rate ~ syllables/sec (rough estimate 1.4 syllables per word)
-  const articulationRate = totalDuration > 0 ? (wordCount * 1.4) / totalDuration : 0;
+  const articulationRate = totalDuration > 0 ? (wordCount * 1.4) / totalDuration : 0; // rough syll/sec
 
   return {
     text,
@@ -101,7 +81,7 @@ export function processTranscript(rawText: string, segments: Segment[]) {
       speechDuration: Number(totalDuration.toFixed(2)),
       articulationRate: Number(articulationRate.toFixed(2)),
       wordCount,
-      sentenceCount: sentCount
+      sentenceCount: sentenceCountVal
     }
   };
 }
