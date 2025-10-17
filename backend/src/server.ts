@@ -7,12 +7,11 @@ import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
 
-// NOTE: add .js endings (NodeNext ESM)
-import { apiRoutes } from './routes/api.js';
+// ✅ ESM runtime needs .js on relative imports
+import apiRoutes from './routes/api.js';
 import { scoreWritingRouter } from './routes/score-writing.js';
 import { gatekeeperRouter } from './routes/gatekeeper.js';
 import { detailedScoringRouter } from './routes/detailed-scoring.js';
-// ❌ remove the second duplicate import of gatekeeperRouter
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,7 +29,6 @@ app.use(cors({
   ],
   credentials: true
 }));
-
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.urlencoded({ extended: true }));
 
@@ -48,10 +46,10 @@ app.use('/api', scoreWritingRouter);
 app.use('/api', gatekeeperRouter);
 app.use('/api', detailedScoringRouter);
 
+// Health
 app.get('/', (_req, res) => {
   res.json({ message: 'IELTS Diagnostic Backend is running!', timestamp: new Date().toISOString() });
 });
-
 app.get('/api/health', (_req, res) => {
   res.json({
     status: 'OK',
@@ -64,6 +62,7 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
+// Errors
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('Error:', err);
   res.status(500).json({ error: 'Internal server error' });
