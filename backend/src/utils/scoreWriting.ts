@@ -14,18 +14,11 @@ interface WritingScore {
 
 export async function scoreWriting(essayText: string): Promise<WritingScore> {
   try {
-    console.log(
-      'DEBUG (scoreWriting): OPENAI_API_KEY:',
-      process.env.OPENAI_API_KEY ? 'Configured' : 'Missing'
-    );
+    console.log('DEBUG (scoreWriting): OPENAI_API_KEY:', process.env.OPENAI_API_KEY ? 'Configured' : 'Missing');
 
     if (!process.env.OPENAI_API_KEY) {
       return {
-        tr: 6.0,
-        cc: 6.0,
-        lr: 6.0,
-        gra: 6.0,
-        overall: 6.0,
+        tr: 6.0, cc: 6.0, lr: 6.0, gra: 6.0, overall: 6.0,
         feedback: 'AI scoring unavailable. Using fallback.',
         actions: ['Practice more essays', 'Focus on grammar', 'Expand vocabulary'],
         rewrites: [],
@@ -35,17 +28,13 @@ export async function scoreWriting(essayText: string): Promise<WritingScore> {
 
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    const systemPrompt = `You are an IELTS Writing examiner. Score TR, CC, LR, GRA (0–9, step 0.5). Return ONLY JSON:
+    const systemPrompt = `You are an IELTS Writing examiner. Score TR, CC, LR, GRA (0–9 step 0.5). Return ONLY JSON:
 {
-  "tr": number,
-  "cc": number,
-  "lr": number,
-  "gra": number,
-  "overall": number,
+  "tr": number, "cc": number, "lr": number, "gra": number, "overall": number,
   "feedback": "string",
   "actions": ["short imperative"],
-  "rewrites": [{"from":"...","to":"...","reason":"..."}],
-  "grammar_table": [{"issue":"...","example":"...","fix":"..."}]
+  "rewrites": [{"from":"…","to":"…","reason":"…"}],
+  "grammar_table": [{"issue":"…","example":"…","fix":"…"}]
 }`;
 
     const completion = await openai.chat.completions.create({
@@ -76,13 +65,9 @@ export async function scoreWriting(essayText: string): Promise<WritingScore> {
     };
   } catch (err) {
     console.error('Error scoring writing:', err);
-    // ✅ FULL fallback to satisfy the interface
+    // ✅ Full object so TypeScript is happy (fixes TS2739)
     return {
-      tr: 6.0,
-      cc: 6.0,
-      lr: 6.0,
-      gra: 6.0,
-      overall: 6.0,
+      tr: 6.0, cc: 6.0, lr: 6.0, gra: 6.0, overall: 6.0,
       feedback: 'Scoring fallback used due to an internal error or unavailable AI service.',
       actions: ['Rewrite body paragraphs using PEEL', 'Add numbers/examples', 'Fix article/SVA errors'],
       rewrites: [],
