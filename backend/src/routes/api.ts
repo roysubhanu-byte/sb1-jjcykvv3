@@ -3,28 +3,33 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs-extra';
 import { v4 as uuidv4 } from 'uuid';
-import { scoreWriting } from '../utils/scoreWriting';
-import { sendEmailReport } from '../utils/emailService';
-import { generatePdfReport } from '../utils/pdfService';
+
+// ⬇️ NodeNext: use .js suffixes
+import { scoreWriting } from '../utils/scoreWriting.js';
+import { sendEmailReport } from '../utils/emailService.js';
+import { generatePdfReport } from '../utils/pdfService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const router = express.Router();
 
-// Data paths
 const DATA_DIR = path.join(__dirname, '../data');
 const LEADS_FILE = path.join(DATA_DIR, 'leads.ndjson');
 const ATTEMPTS_DIR = path.join(DATA_DIR, 'attempts');
 const UPLOADS_DIR = path.join(__dirname, '../uploads');
 
-// Ensure directories exist
 fs.ensureDirSync(DATA_DIR);
 fs.ensureDirSync(path.join(DATA_DIR, 'listening'));
 fs.ensureDirSync(path.join(DATA_DIR, 'writing'));
 fs.ensureDirSync(path.join(DATA_DIR, 'audio'));
 fs.ensureDirSync(ATTEMPTS_DIR);
 fs.ensureDirSync(UPLOADS_DIR);
+
+// ... (rest of your router code unchanged)
+
+export { router as apiRoutes };
+
 
 // POST /api/lead - Capture lead information
 router.post('/lead', async (req, res) => {
