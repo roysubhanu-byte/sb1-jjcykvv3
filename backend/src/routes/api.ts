@@ -1,10 +1,10 @@
-import express from 'express';
+     import express, { Request, Response } from 'express';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs-extra';
 import { v4 as uuidv4 } from 'uuid';
 
-// ✅ ESM: add .js on local utils
+// keep .js extensions because we compile as NodeNext ESM
 import { scoreWriting } from '../utils/scoreWriting.js';
 import { sendEmailReport } from '../utils/emailService.js';
 import { generatePdfReport } from '../utils/pdfService.js';
@@ -14,13 +14,11 @@ const __dirname = path.dirname(__filename);
 
 const router = express.Router();
 
-// ---- Paths ----
 const DATA_DIR = path.join(__dirname, '../data');
 const LEADS_FILE = path.join(DATA_DIR, 'leads.ndjson');
 const ATTEMPTS_DIR = path.join(DATA_DIR, 'attempts');
 const UPLOADS_DIR = path.join(__dirname, '../uploads');
 
-// Ensure dirs
 fs.ensureDirSync(DATA_DIR);
 fs.ensureDirSync(path.join(DATA_DIR, 'listening'));
 fs.ensureDirSync(path.join(DATA_DIR, 'writing'));
@@ -29,9 +27,9 @@ fs.ensureDirSync(ATTEMPTS_DIR);
 fs.ensureDirSync(UPLOADS_DIR);
 
 /** POST /api/lead */
-router.post('/lead', async (req, res) => {
+router.post('/lead', async (req: Request, res: Response) => {
   try {
-    const { email, userAgent, utm, selfie_hash } = req.body ?? {};
+    const { email, userAgent, utm, selfie_hash } = (req.body ?? {}) as Record<string, any>;
     if (!email) return res.status(400).json({ error: 'Email is required' });
 
     const lead = {
@@ -44,7 +42,6 @@ router.post('/lead', async (req, res) => {
     };
 
     await fs.appendFile(LEADS_FILE, JSON.stringify(lead) + '\n', 'utf8');
-    console.log('📥 New lead captured:', email);
     res.json({ ok: true });
   } catch (e) {
     console.error('Error saving lead:', e);
@@ -53,7 +50,7 @@ router.post('/lead', async (req, res) => {
 });
 
 /** GET /api/listening-set */
-router.get('/listening-set', async (_req, res) => {
+router.get('/listening-set', async (_req: Request, res: Response) => {
   try {
     const setPath = path.join(DATA_DIR, 'listening/setA.json');
     if (!(await fs.pathExists(setPath))) await createSampleListeningSet(setPath);
@@ -66,7 +63,7 @@ router.get('/listening-set', async (_req, res) => {
 });
 
 /** GET /api/writing-prompt */
-router.get('/writing-prompt', async (_req, res) => {
+router.get('/writing-prompt', async (_req: Request, res: Response) => {
   try {
     const promptPath = path.join(DATA_DIR, 'writing/promptA.json');
     if (!(await fs.pathExists(promptPath))) await createSampleWritingPrompt(promptPath);
@@ -79,16 +76,15 @@ router.get('/writing-prompt', async (_req, res) => {
 });
 
 /** POST /api/attempts/complete */
-router.post('/attempts/complete', async (req, res) => {
+router.post('/attempts/complete', async (req: Request, res: Response) => {
   try {
-    const { email, selfie_meta, listening, writing } = req.body ?? {};
+    const { email, selfie_meta, listening, writing } = (req.body ?? {}) as any;
     if (!email || !listening || !writing) {
       return res.status(400).json({ error: 'Missing required data' });
     }
 
     const attemptId = uuidv4();
 
-    // map raw -> band (simple)
     const listeningBand = computeListeningBand(listening.raw);
 
     const setPath = path.join(DATA_DIR, 'listening/setA.json');
@@ -111,10 +107,7 @@ router.post('/attempts/complete', async (req, res) => {
       plan7d
     };
 
-    const attemptPath = path.join(ATTEMPTS_DIR, `${attemptId}.json`);
-    await fs.writeJson(attemptPath, result, { spaces: 2 });
-
-    console.log(`📊 Test completed for ${email}, Overall Band: ${overallBand}`);
+    await fs.writeJson(path.join(ATTEMPTS_DIR, `${attemptId}.json`), result, { spaces: 2 });
     res.json(result);
   } catch (e) {
     console.error('Error processing attempt:', e);
@@ -123,13 +116,12 @@ router.post('/attempts/complete', async (req, res) => {
 });
 
 /** POST /api/report/email */
-router.post('/report/email', async (req, res) => {
+router.post('/report/email', async (req: Request, res: Response) => {
   try {
-    const { email, result } = req.body ?? {};
+    const { email, result } = (req.body ?? {}) as any;
     if (!email || !result) return res.status(400).json({ error: 'Email and result data required' });
 
     await sendEmailReport(email, result);
-    console.log(`📧 Report emailed to ${email}`);
     res.json({ ok: true });
   } catch (e) {
     console.error('Error sending email:', e);
@@ -138,15 +130,13 @@ router.post('/report/email', async (req, res) => {
 });
 
 /** GET /api/report/pdf?attempt_id=ID */
-router.get('/report/pdf', async (req, res) => {
+router.get('/report/pdf', async (req: Request, res: Response) => {
   try {
     const attempt_id = String(req.query.attempt_id || '');
     if (!attempt_id) return res.status(400).json({ error: 'Attempt ID required' });
 
     const attemptPath = path.join(ATTEMPTS_DIR, `${attempt_id}.json`);
-    if (!(await fs.pathExists(attemptPath))) {
-      return res.status(404).json({ error: 'Attempt not found' });
-    }
+    if (!(await fs.pathExists(attemptPath))) return res.status(404).json({ error: 'Attempt not found' });
 
     const attemptData = await fs.readJson(attemptPath);
     const pdfBuffer = await generatePdfReport(attemptData);
@@ -161,10 +151,10 @@ router.get('/report/pdf', async (req, res) => {
 });
 
 // ---------- Helpers ----------
-function computeListeningBand(rawScore: number): number {
-  if (rawScore <= 1) return 4.5;
-  if (rawScore <= 3) return 5.5;
-  if (rawScore <= 5) return 6.5;
+function computeListeningBand(raw: number): number {
+  if (raw <= 1) return 4.5;
+  if (raw <= 3) return 5.5;
+  if (raw <= 5) return 6.5;
   return 7.5;
 }
 
@@ -180,12 +170,14 @@ function analyzeListeningErrors(wrongIds: string[], listeningSet: any) {
         explanation: item.explanation,
         paraphrases: item.paraphrases
       });
-      (item.tags || []).forEach((tag: string) => { tagCounts[tag] = (tagCounts[tag] || 0) + 1; });
+      (item.tags || []).forEach((tag: string) => {
+        tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+      });
     }
   });
 
-  const sortedTags = Object.entries(tagCounts).sort(([, a], [, b]) => b - a).slice(0, 2);
-  const synonymsSuggested = sortedTags.map(([tag]) => {
+  const sorted = Object.entries(tagCounts).sort((a, b) => b[1] - a[1]).slice(0, 2);
+  const synonymsSuggested = sorted.map(([tag]) => {
     switch (tag) {
       case 'inference': return 'Listen for implied conclusions; confirm with a second clue.';
       case 'numbers': return 'Write numbers as heard; double-check units (kg, km).';
@@ -199,7 +191,12 @@ function analyzeListeningErrors(wrongIds: string[], listeningSet: any) {
   return { wrong: wrongItems, synonyms_suggested: synonymsSuggested };
 }
 
-function generate7DayPlan(listeningBand: number, writingBand: number, listeningReview: any, writingReview: any): string[] {
+function generate7DayPlan(
+  listeningBand: number,
+  writingBand: number,
+  listeningReview: any,
+  writingReview: any
+): string[] {
   const plan: string[] = [];
   const overallBand = (listeningBand + writingBand) / 2;
 
@@ -222,7 +219,7 @@ function generate7DayPlan(listeningBand: number, writingBand: number, listeningR
   if (strengths.length) day1 += `Maintain your ${strengths.join(' and ')}.`;
   plan.push(day1);
 
-  if (listeningBand < 4.0) plan.push('Day 2: Basic listening — videos w/ subtitles 30 min. Focus on main ideas.');
+  if (listeningBand < 4.0) plan.push('Day 2: Basic listening — videos with subtitles 30 min. Focus on main ideas.');
   else if (listeningBand < 5.0) plan.push('Day 2: Listening Part 1 intensive — 3 sets, practice note-taking.');
   else if (listeningBand < 6.0) plan.push('Day 2: Parts 2–3 focus — paraphrases & synonyms.');
   else if (listeningBand < 7.0) plan.push('Day 2: Part 4 lectures — complex arguments and details.');
@@ -246,13 +243,10 @@ function generate7DayPlan(listeningBand: number, writingBand: number, listeningR
   else if (writingBand < listeningBand - 1.0) plan.push('Day 5: Writing Task 1 + Task 2 under time (60 min).');
   else plan.push('Day 5: Balanced mini-test for both skills.');
 
-  if (overallBand < 5.0) plan.push('Day 6: Essential time management + elimination techniques.');
-  else if (overallBand < 6.0) plan.push('Day 6: Intermediate strategies — advanced note-taking & 5-minute essay plan.');
+  if (overallBand < 6.0) plan.push('Day 6: Essential time management + elimination techniques.');
   else plan.push('Day 6: Advanced techniques — prediction in listening, sophisticated vocabulary.');
 
-  if (overallBand < 6.0) plan.push('Day 7: Comprehensive review + mini-test.');
-  else if (overallBand < 7.0) plan.push('Day 7: Progress assessment + adjust plan.');
-  else plan.push('Day 7: Full practice test for consistency.');
+  plan.push('Day 7: Comprehensive review + mini-test.');
 
   return plan;
 }
