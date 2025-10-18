@@ -5,17 +5,16 @@ import fs from 'fs-extra';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// NOTE: This returns an HTML Buffer (MVP). Swap to real PDF (puppeteer/pdfkit) later.
 export async function generatePdfReport(attemptData: any): Promise<Buffer> {
   try {
-    // For MVP, return HTML instead of PDF (easier to implement)
-    // You can use libraries like puppeteer or html-pdf for actual PDF generation
-
     const detailedFeedback = attemptData.detailed_feedback || null;
 
     const htmlContent = `
       <!DOCTYPE html>
       <html>
         <head>
+          <meta charset="utf-8" />
           <title>IELTS Diagnostic Report</title>
           <style>
             body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; }
@@ -224,10 +223,7 @@ export async function generatePdfReport(attemptData: any): Promise<Buffer> {
       </html>
     `;
 
-    // For MVP, return HTML as buffer
-    // In production, you'd use html-pdf or puppeteer to convert to actual PDF
     return Buffer.from(htmlContent, 'utf8');
-
   } catch (error) {
     console.error('Error generating PDF:', error);
     throw error;
