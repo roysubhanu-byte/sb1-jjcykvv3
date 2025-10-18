@@ -6,7 +6,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-// ⬅️ use the named export here
+// Routers (ESM imports must include .js for relative paths)
 import { apiRoutes } from './routes/api.js';
 import { gatekeeperRouter } from './routes/gatekeeper.js';
 import { scoreWritingRouter } from './routes/score-writing.js';
@@ -26,7 +26,6 @@ app.use(express.json({ limit: '10mb' }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/audio', express.static(path.join(__dirname, 'data/audio')));
 
-// ⬅️ and mount the named export here
 app.use('/api', apiRoutes);
 app.use('/api/gatekeeper', gatekeeperRouter);
 app.use('/api/writing', scoreWritingRouter);
