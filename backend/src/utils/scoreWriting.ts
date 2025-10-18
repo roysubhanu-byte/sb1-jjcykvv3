@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 
-interface WritingScore {
+export interface WritingScore {
   tr: number;
   cc: number;
   lr: number;
@@ -114,9 +114,7 @@ Return STRICT JSON:
     });
 
     const raw = completion.choices[0]?.message?.content;
-    if (!raw) {
-      return SAFE_FALLBACK;
-    }
+    if (!raw) return SAFE_FALLBACK;
 
     let parsed: any;
     try {
@@ -157,9 +155,7 @@ Return STRICT JSON:
       lr,
       gra,
       overall,
-      feedback: typeof parsed.feedback === 'string'
-        ? parsed.feedback
-        : SAFE_FALLBACK.feedback,
+      feedback: typeof parsed.feedback === 'string' ? parsed.feedback : SAFE_FALLBACK.feedback,
       actions: Array.isArray(parsed.actions) ? parsed.actions : SAFE_FALLBACK.actions,
       rewrites: Array.isArray(parsed.rewrites) ? parsed.rewrites : [],
       grammar_table: Array.isArray(parsed.grammar_table) ? parsed.grammar_table : [],
