@@ -4,6 +4,9 @@ import { createClient } from '@supabase/supabase-js';
 
 const router = express.Router();
 
+/* ===========================
+   Types (response shape)
+   =========================== */
 interface ScoreWritingRequest {
   task_prompt: string;
   module: 'Academic' | 'General';
@@ -13,7 +16,7 @@ interface ScoreWritingRequest {
   attempt_id: string | null;
 }
 
-interface ScoreWritingResponse {
+interface ScoreWritingResponseRaw {
   tr: number;
   cc: number;
   lr: number;
@@ -24,18 +27,13 @@ interface ScoreWritingResponse {
   word_count: number;
   evidence_quotes: string[];
   grammar_error_count: number;
-  grammar_examples: Array<{
-    error: string;
-    excerpt: string;
-    fix: string;
-  }>;
+  grammar_examples: Array<{ error: string; excerpt: string; fix: string }>;
   cohesion_issues: string[];
   lexical_notes: string[];
   repetition_notes: string[];
   template_likelihood: number;
   feedback_bullets: string[];
   improvements: string[];
-  // NEW DETAIL FIELDS
   spelling_errors: number;
   punctuation_errors: number;
   hyphenation_errors: number;
@@ -46,6 +44,16 @@ interface ScoreWritingResponse {
   collocations: string[];
 }
 
+/* ===========================
+   Helpers
+   =========================== */
+const roundHalf = (n: number) => Math.round(n * 2) / 2;
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+const numOrNull = (v: unknown) => (isNum(v) ? (v as number) : null);
+
+/* ===========================
+   Route
+   =========================== */
 router.post('/score-writing', async (req, res) => {
   try {
     const {
@@ -55,20 +63,20 @@ router.post('/score-writing', async (req, res) => {
       essay_text,
       word_count,
       attempt_id
-    }: ScoreWritingRequest = req.body;
+    }: ScoreWritingRequest = req.body || {};
 
+    // 1) Basic validation
     if (!task_prompt || !module || !task_type || !essay_text) {
       return res.status(400).json({
         error: 'Missing required fields: task_prompt, module, task_type, essay_text'
       });
     }
-
     if (!process.env.OPENAI_API_KEY) {
       return res.status(500).json({ error: 'OpenAI API key not configured on server' });
     }
 
+    // 2) Initialize clients
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
     const supabase = createClient(
       process.env.SUPABASE_URL || '',
       process.env.SUPABASE_SERVICE_ROLE_KEY || '',
@@ -77,9 +85,11 @@ router.post('/score-writing', async (req, res) => {
 
     const minRequiredWords = task_type === 'Task 2' ? 250 : 150;
 
+    // 3) System prompt (unchanged content from your version)
     const systemPrompt = `You are an EXTREMELY STRICT IELTS Writing examiner. Provide comprehensive, actionable feedback showing the path from current band to Band 8.0.
 
-[...PROMPT BODY UNCHANGED—same as you shared...]
+[Same long prompt body you already use — omitted for brevity in this file.
+Keep your existing penalties, rewards, and the EXACT JSON schema requirement.]
 
 Return JSON ONLY with this exact schema:
 {
@@ -119,7 +129,7 @@ Return JSON ONLY with this exact schema:
       min_required_words: minRequiredWords
     });
 
-    // Call OpenAI with strict JSON format
+    // 4) Call OpenAI with strict JSON format (with a retry)
     let completion;
     try {
       completion = await openai.chat.completions.create({
@@ -132,23 +142,22 @@ Return JSON ONLY with this exact schema:
         max_tokens: 2000,
         response_format: { type: 'json_object' }
       });
-    } catch (openaiError) {
-      console.error('OpenAI API error:', openaiError);
+    } catch (err) {
+      console.error('OpenAI API error:', err);
       return res.status(500).json({ error: 'AI scoring service unavailable' });
     }
 
-    const responseText = completion.choices[0]?.message?.content;
-    if (!responseText) {
+    const firstText = completion.choices[0]?.message?.content;
+    if (!firstText) {
       return res.status(500).json({ error: 'No response from AI scoring service' });
     }
 
-    // Parse JSON response with retry logic
-    let scoringResult: ScoreWritingResponse;
+    let parsed: ScoreWritingResponseRaw;
     try {
-      scoringResult = JSON.parse(responseText);
+      parsed = JSON.parse(firstText);
     } catch {
       try {
-        const retryCompletion = await openai.chat.completions.create({
+        const retry = await openai.chat.completions.create({
           model: 'gpt-4o',
           messages: [
             { role: 'system', content: systemPrompt + '\n\nReturn JSON only. No additional text.' },
@@ -158,58 +167,83 @@ Return JSON ONLY with this exact schema:
           max_tokens: 2000,
           response_format: { type: 'json_object' }
         });
-        const retryResponseText = retryCompletion.choices[0]?.message?.content;
-        if (!retryResponseText) throw new Error('No response from retry attempt');
-        scoringResult = JSON.parse(retryResponseText);
-      } catch (retryError) {
-        console.error('Retry JSON parse failed:', retryError);
+        const retryText = retry.choices[0]?.message?.content;
+        if (!retryText) throw new Error('No response in retry');
+        parsed = JSON.parse(retryText);
+      } catch (e) {
+        console.error('Retry JSON parse failed:', e);
         return res.status(500).json({ error: 'AI response format error' });
       }
     }
 
-    // Server-side post-processing and safety caps
-    let { band_overall, tr, cc, lr, gra, off_topic, on_topic_percent } = scoringResult;
+    // 5) Post-process & caps
+    let tr = numOrNull(parsed.tr);
+    let cc = numOrNull(parsed.cc);
+    let lr = numOrNull(parsed.lr);
+    let gra = numOrNull(parsed.gra);
+    let band_overall = numOrNull(parsed.band_overall);
 
-    if (off_topic === true || (on_topic_percent && on_topic_percent <= 50)) {
-      band_overall = Math.min(band_overall, 3.0);
+    // Round to half if they exist
+    tr = tr === null ? null : roundHalf(tr);
+    cc = cc === null ? null : roundHalf(cc);
+    lr = lr === null ? null : roundHalf(lr);
+    gra = gra === null ? null : roundHalf(gra);
+
+    if (band_overall === null && tr !== null && cc !== null && lr !== null && gra !== null) {
+      band_overall = roundHalf((tr + cc + lr + gra) / 4);
+    } else if (band_overall !== null) {
+      band_overall = roundHalf(band_overall);
+    }
+
+    // Strict caps
+    let off_topic = !!parsed.off_topic;
+    const on_topic_percent = numOrNull(parsed.on_topic_percent) ?? 100;
+    if (off_topic === true || on_topic_percent <= 50) {
+      if (band_overall !== null) band_overall = Math.min(band_overall, 3.0);
       off_topic = true;
     }
-    if (word_count < minRequiredWords) {
+    if (word_count < minRequiredWords && band_overall !== null) {
       band_overall = Math.min(band_overall, 5.0);
     }
 
-    const roundToHalf = (num: number) => Math.round(num * 2) / 2;
-    tr = roundToHalf(tr);
-    cc = roundToHalf(cc);
-    lr = roundToHalf(lr);
-    gra = roundToHalf(gra);
-    band_overall = roundToHalf(band_overall);
-
-    const finalResult: ScoreWritingResponse = {
-      ...scoringResult,
-      tr,
-      cc,
-      lr,
-      gra,
-      band_overall,
-      off_topic: off_topic || false,
-      on_topic_percent: on_topic_percent || 100,
-      word_count,
-      spelling_errors: scoringResult.spelling_errors || 0,
-      punctuation_errors: scoringResult.punctuation_errors || 0,
-      hyphenation_errors: scoringResult.hyphenation_errors || 0,
-      paragraph_count: scoringResult.paragraph_count || 0,
-      linking_devices: scoringResult.linking_devices || [],
-      advanced_c2_words: scoringResult.advanced_c2_words || [],
-      phrasal_verbs: scoringResult.phrasal_verbs || [],
-      collocations: scoringResult.collocations || []
+    // 6) Shape data for the FRONTEND (Bolt changes)
+    //    - criterion_bands { TR, CC, LR, GRA }
+    //    - skills_breakdown { listening, reading, writing, speaking }
+    //    - improvement_path { current_level, target_level }
+    const criterion_bands = {
+      TR: tr,
+      CC: cc,
+      LR: lr,
+      GRA: gra
     };
 
-    // Store in Supabase (optional if attempt_id present)
+    // Only put numeric values; otherwise leave as null and UI shows N/A
+    const skills_breakdown = {
+      listening: null as number | null,
+      reading: null as number | null,
+      writing: band_overall,   // Writing band equals overall from writing scorer
+      speaking: null as number | null
+    };
+
+    const improvement_path = {
+      current_level: band_overall,
+      target_level: 7.5  // your UI screenshot shows 7.5 target; adjust if you compute dynamically
+    };
+
+    // Merge the full payload the UI can consume
+    const feedbackJsonWithCriteria = {
+      ...parsed,
+      tr, cc, lr, gra, band_overall, off_topic, on_topic_percent,
+      criterion_bands,
+      skills_breakdown,
+      improvement_path
+    };
+
+    // 7) Persist to Supabase (the UI reads feedback_json)
     if (attempt_id) {
       const taskNumber = task_type === 'Task 1' ? 1 : 2;
 
-      const { error: insertError } = await supabase
+      const { error: upsertError } = await supabase
         .from('writing_submissions')
         .upsert(
           {
@@ -217,12 +251,12 @@ Return JSON ONLY with this exact schema:
             task: taskNumber,
             text_md: essay_text,
             word_count,
-            band: finalResult.band_overall,
-            feedback_json: finalResult,
-            on_topic_percent: finalResult.on_topic_percent ?? null,
-            off_topic: finalResult.off_topic ?? null,
-            grammar_error_count: finalResult.grammar_error_count ?? null,
-            template_likelihood: finalResult.template_likelihood ?? null,
+            band: band_overall,
+            feedback_json: feedbackJsonWithCriteria,   // IMPORTANT: save the wrapped JSON
+            on_topic_percent,
+            off_topic,
+            grammar_error_count: numOrNull(parsed.grammar_error_count),
+            template_likelihood: numOrNull(parsed.template_likelihood),
             gatekeeper_result: 'ok',
             gatekeeper_reason: 'Passed gatekeeper check',
             created_at: new Date().toISOString()
@@ -230,16 +264,17 @@ Return JSON ONLY with this exact schema:
           { onConflict: 'attempt_id,task' }
         );
 
-      if (insertError) {
-        console.error('Supabase insert error:', insertError);
+      if (upsertError) {
+        console.error('Supabase upsert error:', upsertError);
         return res.status(500).json({ error: 'Failed to save scoring results' });
       }
     }
 
-    res.json(finalResult);
+    // 8) Respond to client using the wrapped structure
+    return res.json(feedbackJsonWithCriteria);
   } catch (error) {
-    console.error('Error in score-writing route:', error);
-    res.status(500).json({ error: 'Internal server error during scoring' });
+    console.error('Error in /api/writing/score-writing:', error);
+    return res.status(500).json({ error: 'Internal server error during scoring' });
   }
 });
 
