@@ -1,49 +1,51 @@
+// backend/src/routes/speaking-asr.ts
 import express from 'express';
-import multer from 'multer';
-import OpenAI from 'openai';
-import { processTranscript } from '../utils/transcriptProcessor.js';
-
 const router = express.Router();
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 }
-});
 
-/**
- * POST /api/speaking/transcribe
- * form-data: audio (file)
- */
-router.post('/transcribe', upload.single('audio'), async (req, res) => {
+import { processTranscript } from '../utils/transcript.js';
+
+interface TranscribeBody {
+  transcript?: string;           // raw ASR text (if you already have it)
+  // if you send audio somewhere else, you can keep the fields you had before
+}
+
+router.post('/transcribe', async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'No audio file provided' });
-    if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: 'OpenAI API key not configured' });
+    const body: TranscribeBody = req.body || {};
+    const raw = (body.transcript || '').toString();
 
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    if (!raw.trim()) {
+      return res.status(400).json({ error: 'Missing transcript text' });
+    }
 
-    const audioData = new Uint8Array(req.file.buffer);
+    // your own utility from utils/transcript.ts
+    const processed = processTranscript(raw);
 
-    const tr = await openai.audio.transcriptions.create({
-      model: 'whisper-1',
-      file: audioData as any, // SDK accepts Uint8Array/stream; cast for TS
-      response_format: 'verbose_json',
-      temperature: 0
+    // Build a response similar to what your scorer expects
+    const minutes = Math.max(1, Math.round(processed.wordCount / 130)); // naive duration estimate
+    const wpm = Math.round(processed.wordCount / minutes);
+
+    const fillerRate =
+      processed.wordCount > 0
+        ? Number(((processed.fillerCount / processed.wordCount) * 100).toFixed(2))
+        : 0;
+
+    return res.json({
+      ok: true,
+      processed_text: processed.text,
+      sentences: processed.sentences,
+      word_count: processed.wordCount,
+      filler_words: processed.fillerWords,
+      filler_count: processed.fillerCount,
+      metrics: {
+        wpm,
+        filler_rate_percent: fillerRate
+      }
     });
-
-    const rawText = (tr as any).text || '';
-    const segments = (tr as any).segments || [];
-
-    const processed = processTranscript(rawText, segments);
-
-    res.json({
-      transcript: processed.text,
-      audioFeatures: processed.audioFeatures,
-      segments
-    });
-  } catch (err) {
-    console.error('Transcription error:', err);
-    res.status(500).json({ error: 'Transcription failed' });
+  } catch (err: any) {
+    console.error('speaking-asr /transcribe error:', err);
+    return res.status(500).json({ error: 'ASR post-processing failed' });
   }
 });
 
 export default router;
-
