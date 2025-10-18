@@ -65,7 +65,7 @@ const roundHalf = (n: number) => Math.round(n * 2) / 2;
 // ------------------------------------------------------------
 // Expects that you already write one row to `public.sections` per section
 // with `type` in ('listening','reading','writing','speaking') and
-// the metric columns outlined in the migration I gave you.
+// the metric columns you’re already using in Bolt.
 // This endpoint:
 // 1) reads those section rows,
 // 2) updates `public.attempts` with per-section bands + overall,
@@ -93,10 +93,10 @@ app.post('/api/attempts/:id/finish', async (req, res) => {
     const sWriting   = byType('writing');
     const sSpeaking  = byType('speaking');
 
-    const L = sListening.band ?? null;
-    const R = sReading.band   ?? null;
-    const W = sWriting.band   ?? null;
-    const S = sSpeaking.band  ?? null;
+    const L = typeof sListening.band === 'number' ? sListening.band : null;
+    const R = typeof sReading.band   === 'number' ? sReading.band   : null;
+    const W = typeof sWriting.band   === 'number' ? sWriting.band   : null;
+    const S = typeof sSpeaking.band  === 'number' ? sSpeaking.band  : null;
 
     const present = [L, R, W, S].filter((x) => x !== null) as number[];
     const overall = present.length ? roundHalf(present.reduce((a, b) => a + b, 0) / present.length) : null;
@@ -191,3 +191,4 @@ const PORT = Number(process.env.PORT || 8080);
 app.listen(PORT, () => {
   console.log(`✅ Server listening on :${PORT}`);
 });
+
