@@ -1,13 +1,14 @@
-// backend/src/routes/api.ts
 import express from 'express';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs-extra';
 import { v4 as uuidv4 } from 'uuid';
 import { createClient } from '@supabase/supabase-js';
-import { scoreWriting } from '../utils/scoreWriting';
-import { sendEmailReport } from '../utils/emailService';
-import { generatePdfReport } from '../utils/pdfService';
+
+// NOTE: ESM relative imports must end with .js
+import { scoreWriting } from '../utils/scoreWriting.js';
+import { sendEmailReport } from '../utils/emailService.js';
+import { generatePdfReport } from '../utils/pdfService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -120,7 +121,6 @@ router.get('/listening-set', async (_req, res) => {
       tags: Array.isArray(item.tags) ? item.tags : []
     }));
 
-    // Use the first audio_url if present; your frontend can also read per-item audio_url if needed
     const audioUrl = items[0]?.audio_url || null;
 
     return res.json({
@@ -153,8 +153,6 @@ router.get('/writing-prompt', async (_req, res) => {
 
 /* ==============================
    Attempt completion (legacy file-based demo flow)
-   NOTE: Your production flow should use /api/attempts/:id/finish
-         which finalizes an existing attempt in Supabase.
    ============================== */
 router.post('/attempts/complete', async (req, res) => {
   try {
@@ -169,19 +167,15 @@ router.post('/attempts/complete', async (req, res) => {
     // Business rule: diagnostic listening cap at 6.5
     const listeningBand = computeListeningBand(listening.raw);
 
-    // Fallback set (only used for wrong-id explanations here)
     const setPath = path.join(DATA_DIR, 'listening/setA.json');
     const listeningSet = (await fs.pathExists(setPath))
       ? await fs.readJson(setPath)
       : { items: [] };
 
     const listeningReview = analyzeListeningErrors(listening.wrong_ids, listeningSet);
-
     const writingReview = await scoreWriting(writing.text);
 
-    // Overall = mean(listening, writing) → rounded to nearest 0.5
     const overallBand = Math.round(((listeningBand + (writingReview.overall || 0)) / 2) * 2) / 2;
-
     const plan7d = generate7DayPlan(listeningBand, writingReview.overall || 0, listeningReview, writingReview);
 
     const result = {
@@ -261,12 +255,11 @@ router.get('/report/pdf', async (req, res) => {
    Helpers
    ============================== */
 
-// DIAGNOSTIC CAP: max 6.5 for Listening
 function computeListeningBand(rawScore: number): number {
   if (rawScore <= 1) return 4.5;
   if (rawScore <= 3) return 5.5;
   if (rawScore <= 5) return 6.5;
-  return 6.5; // capped (was 7.5)
+  return 6.5; // capped
 }
 
 function analyzeListeningErrors(wrongIds: string[] = [], listeningSet: any) {
@@ -309,10 +302,7 @@ function analyzeListeningErrors(wrongIds: string[] = [], listeningSet: any) {
     }
   });
 
-  return {
-    wrong: wrongItems,
-    synonyms_suggested: synonymsSuggested
-  };
+  return { wrong: wrongItems, synonyms_suggested: synonymsSuggested };
 }
 
 function generate7DayPlan(
@@ -341,9 +331,7 @@ function generate7DayPlan(
   if (listeningBand >= 6.0) strengths.push('listening comprehension');
   if (writingBand >= 6.0) strengths.push('writing fundamentals');
 
-  let day1 = `Day 1: Analyze your results - Listening: ${listeningBand}, Writing: ${writingBand}, Overall: ${overallBand.toFixed(
-    1
-  )}. `;
+  let day1 = `Day 1: Analyze your results - Listening: ${listeningBand}, Writing: ${writingBand}, Overall: ${overallBand.toFixed(1)}. `;
   if (weaknesses.length) day1 += `Priority weaknesses: ${weaknesses.slice(0, 3).join(', ')}. `;
   if (strengths.length) day1 += `Maintain your ${strengths.join(' and ')}.`;
   plan.push(day1);
