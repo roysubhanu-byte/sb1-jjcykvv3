@@ -88,3 +88,67 @@ router.post("/order", async (req, res) => {
 });
 
 export default router;
+
+// --- Grant access after successful Razorpay payment ---
+// POST /api/payments/grant-access
+// body: { email: string, moduleType: 'Academic' | 'General', order_id?: string, amountINR?: number, couponCode?: string }
+import { createClient } from '@supabase/supabase-js';
+
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_SERVICE_ROLE =
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || '';
+
+const supabaseSr =
+  SUPABASE_URL && SUPABASE_SERVICE_ROLE
+    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
+    : null;
+
+router.post('/grant-access', async (req, res) => {
+  try {
+    const { email, moduleType, order_id, amountINR, couponCode } = req.body || {};
+    if (!email || !moduleType) {
+      return res.status(400).json({ error: 'email and moduleType are required' });
+    }
+    if (!supabaseSr) {
+      return res.status(500).json({ error: 'Database not configured' });
+    }
+
+    // 1) Record a payment row (optional; adjust table/columns to match your schema)
+    await supabaseSr.from('payments').insert({
+      user_email: email,
+      module_type: moduleType,
+      provider: 'razorpay',
+      order_id: order_id || null,
+      amount_inr: amountINR ?? null,
+      coupon_code: couponCode || null,
+      status: 'captured',
+    });
+
+    // 2) Grant access that your gatekeeper/MockRunner checks.
+    // Adjust table/columns to YOUR schema. The common pattern you described is `user_access`.
+    // Make (user_email,module_type) unique on the table so this is idempotent.
+    const { error } = await supabaseSr
+      .from('user_access')
+      .upsert(
+        {
+          user_email: email,
+          module_type: moduleType, // 'Academic'|'General'
+          is_paid: true,
+          source: 'razorpay',
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_email,module_type' }
+      );
+
+    if (error) {
+      console.error('grant-access upsert error:', error);
+      return res.status(500).json({ error: 'Failed to grant access' });
+    }
+
+    return res.json({ ok: true });
+  } catch (e: any) {
+    console.error('grant-access error:', e);
+    return res.status(500).json({ error: e?.message || 'grant-access failed' });
+  }
+});
+
