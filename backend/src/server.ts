@@ -14,7 +14,7 @@ import { detailedScoringRouter } from './routes/detailed-scoring.js';
 import speakingAsrRouter from './routes/speaking-asr.js';
 import speakingScorerRouter from './routes/speaking-scorer.js';
 
-// NEW routers (these files compile to .js)
+// NEW routers (must exist and compile to .js)
 import paymentsRouter from './routes/payments.js';
 import capiRouter from './routes/capi.js';
 import { couponsRouter } from './routes/coupons.js';
@@ -22,13 +22,15 @@ import { couponsRouter } from './routes/coupons.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const app = express(); // <-- define BEFORE any app.use
+// 👇 DEFINE APP *BEFORE* ANY app.use(...)
+const app = express();
 const PORT = Number(process.env.PORT || 8080);
 
+// Core middleware
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// Static
+// Static files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/audio', express.static(path.join(__dirname, 'data/audio')));
 
@@ -40,12 +42,12 @@ app.use('/api/writing', detailedScoringRouter);
 app.use('/api/speaking', speakingAsrRouter);
 app.use('/api/speaking', speakingScorerRouter);
 
-// NEW: Orders, Coupons, CAPI
-app.use('/payments', paymentsRouter);       // POST /payments/order
-app.use('/api/coupons', couponsRouter);     // POST /api/coupons/validate, /record-usage
-app.use('/capi', capiRouter);               // POST /capi/purchase
+// NEW routes
+app.use('/payments', paymentsRouter);        // POST /payments/order
+app.use('/api/coupons', couponsRouter);      // POST /api/coupons/validate, /record-usage
+app.use('/capi', capiRouter);                // POST /capi/purchase
 
-// Health
+// Healthcheck
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => {
