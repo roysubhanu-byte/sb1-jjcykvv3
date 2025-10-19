@@ -18,16 +18,25 @@ import speakingScorerRouter from './routes/speaking-scorer.js';
 import paymentsRouter from './routes/payments.js';
 import capiRouter from './routes/capi.js';
 import { couponsRouter } from './routes/coupons.js';
+import { razorpayWebhook } from './routes/razorpay-webhook.js'; // ← add this
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// -- app before any app.use --
 const app = express();
 const PORT = Number(process.env.PORT || 8080);
 
-// Core middleware
+// CORS
 app.use(cors());
+
+// -----------------------------
+// Razorpay webhook (RAW body, BEFORE express.json)
+// Provide both paths so dashboard can hit either.
+// -----------------------------
+app.post('/webhooks/razorpay', express.raw({ type: 'application/json' }), razorpayWebhook);
+app.post('/api/webhooks/razorpay', express.raw({ type: 'application/json' }), razorpayWebhook);
+
+// JSON parser for all other routes
 app.use(express.json({ limit: '10mb' }));
 
 // Static files
@@ -42,14 +51,14 @@ app.use('/api/writing', detailedScoringRouter);
 app.use('/api/speaking', speakingAsrRouter);
 app.use('/api/speaking', speakingScorerRouter);
 
-// NEW: Orders, Coupons, CAPI
-app.use('/payments', paymentsRouter);            // POST /payments/order
-app.use('/api/payments', paymentsRouter);        // alias to match frontend calls
+// Payments / Coupons / CAPI (with /api aliases to match frontend)
+app.use('/payments', paymentsRouter);            // /payments/order, /payments/grant-access
+app.use('/api/payments', paymentsRouter);        // alias
 
-app.use('/api/coupons', couponsRouter);          // POST /api/coupons/validate, /record-usage
+app.use('/api/coupons', couponsRouter);          // /api/coupons/validate, /record-usage
 
-app.use('/capi', capiRouter);                    // POST /capi/purchase
-app.use('/api/capi', capiRouter);                // alias to match frontend calls
+app.use('/capi', capiRouter);                    // /capi/purchase
+app.use('/api/capi', capiRouter);                // alias
 
 // Healthcheck
 app.get('/health', (_req, res) => res.json({ ok: true }));
