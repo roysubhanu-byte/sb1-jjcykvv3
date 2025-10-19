@@ -1,70 +1,112 @@
-import express from 'express';
+import type { Request, Response } from 'express';
 import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
 
-const router = express.Router();
-
+// ENV
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_ROLE =
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || '';
-const RZP_WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || '';
+const RAZORPAY_WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || '';
 
-const supabase = (SUPABASE_URL && SUPABASE_SERVICE_ROLE)
-  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
-  : null;
+const supabase =
+  SUPABASE_URL && SUPABASE_SERVICE_ROLE
+    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
+    : null;
 
-router.post('/razorpay/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+function bad(res: Response, code: number, msg: string) {
+  return res.status(code).json({ error: msg });
+}
+
+export default async function razorpayWebhook(req: Request, res: Response) {
   try {
-    if (!RZP_WEBHOOK_SECRET) return res.status(500).send('secret missing');
+    if (!RAZORPAY_WEBHOOK_SECRET) {
+      return bad(res, 500, 'Webhook secret not configured');
+    }
+    if (!supabase) {
+      return bad(res, 500, 'Database not configured');
+    }
 
-    const signature = req.headers['x-razorpay-signature'] as string;
-    const payload = req.body as Buffer;             // raw body because of HMAC
-    const digest = crypto.createHmac('sha256', RZP_WEBHOOK_SECRET).update(payload).digest('hex');
+    // req.body is a Buffer because we used express.raw()
+    const rawBody: Buffer = req.body as unknown as Buffer;
+    const receivedSignature = (req.header('x-razorpay-signature') || '').toString();
 
-    if (digest !== signature) return res.status(400).send('invalid signature');
+    // Verify signature
+    const expected = crypto
+      .createHmac('sha256', RAZORPAY_WEBHOOK_SECRET)
+      .update(rawBody)
+      .digest('hex');
 
-    const event = JSON.parse(payload.toString('utf8'));
+    if (!receivedSignature || expected !== receivedSignature) {
+      return bad(res, 400, 'Invalid webhook signature');
+    }
 
-    // We only care after payment is captured/authorized
-    if (event?.event === 'payment.captured' || event?.event === 'payment.authorized') {
-      const payment = event.payload.payment.entity;
+    // Parse event
+    const event = JSON.parse(rawBody.toString('utf8'));
 
-      // The order carries our notes (email, module_type, coupon, etc.)
-      const orderNotes = payment?.notes || {};
-      const email = orderNotes.email || event?.payload?.order?.entity?.notes?.email || null;
-      const moduleType = orderNotes.module_type || event?.payload?.order?.entity?.notes?.module_type || null;
-      const orderId = payment?.order_id || null;
+    // Handle both order.paid and payment.captured
+    // Try to read from payment, then from order
+    const paymentEntity = event?.payload?.payment?.entity || null;
+    const orderEntity   = event?.payload?.order?.entity || null;
 
-      // Record payment
-      if (supabase) {
+    // Prefer notes from payment; else from order
+    const notes = (paymentEntity?.notes || orderEntity?.notes || {}) as Record<string, any>;
+
+    const email       = (notes.email || notes.user_email || '').toString().trim();
+    const moduleType  = (notes.module_type || notes.module || '').toString().trim();
+    const couponCode  = (notes.coupon || '').toString().trim();
+
+    const orderId     = (paymentEntity?.order_id || orderEntity?.id || '').toString();
+    const paymentId   = (paymentEntity?.id || '').toString();
+
+    // Amount: prefer payment.amount, else order.amount — convert paise -> INR
+    const paise = Number(paymentEntity?.amount ?? orderEntity?.amount ?? 0);
+    const amountInr = Number.isFinite(paise) ? Math.round(paise) / 100 : null;
+
+    // Idempotency – if we already stored this payment_id, do nothing
+    if (paymentId) {
+      const { data: existing } = await supabase
+        .from('payments')
+        .select('id')
+        .eq('provider', 'razorpay')
+        .eq('payment_id', paymentId)
+        .maybeSingle();
+
+      if (!existing) {
         await supabase.from('payments').insert({
-          user_email: email,
-          module_type: moduleType,
           provider: 'razorpay',
-          order_id: orderId,
-          payment_id: payment?.id || null,
-          amount_inr: Number(payment?.amount || 0) / 100,
+          order_id: orderId || null,
+          payment_id: paymentId || null,
+          user_email: email || null,
+          module_type: moduleType || null,
+          coupon_code: couponCode || null,
+          amount_inr: amountInr,
           status: 'captured',
-          coupon_code: orderNotes.coupon || null,
-        }).select().maybeSingle();
+          source: 'webhook',
+        });
+      }
+    }
 
-        if (email && moduleType) {
-          await supabase.from('user_access').upsert({
+    // If we have enough info, grant access
+    if (email && moduleType) {
+      await supabase
+        .from('user_access')
+        .upsert(
+          {
             user_email: email,
             module_type: moduleType,
             has_paid: true,
             source: 'razorpay_webhook',
             updated_at: new Date().toISOString(),
-          }, { onConflict: 'user_email,module_type' });
-        }
-      }
+          },
+          { onConflict: 'user_email,module_type' }
+        );
     }
 
-    return res.status(200).send('ok');
-  } catch (e) {
-    console.error('webhook error:', e);
-    return res.status(200).send('ok'); // respond 200 so Razorpay stops retrying
+    // Respond fast — Razorpay expects 2xx
+    return res.json({ ok: true });
+  } catch (err: any) {
+    console.error('Webhook error:', err?.message || err);
+    // Still return 200 to avoid Razorpay retries storm; log for investigation
+    return res.json({ ok: true, received: true });
   }
-});
-
-export default router;
+}
