@@ -6,12 +6,14 @@ const router = Router();
 
 const PIXEL_ID = process.env.META_PIXEL_ID!;
 const ACCESS_TOKEN = process.env.META_ACCESS_TOKEN!;
+if (!PIXEL_ID || !ACCESS_TOKEN) throw new Error("Missing META_PIXEL_ID or META_ACCESS_TOKEN");
+
 const META_URL = `https://graph.facebook.com/v18.0/${PIXEL_ID}/events`;
 
-function sha256Lower(input?: string | null) {
-  if (!input) return undefined;
-  const norm = String(input).trim().toLowerCase();
-  return crypto.createHash("sha256").update(norm).digest("hex");
+function sha256Lower(v?: string | null) {
+  if (!v) return undefined;
+  const s = String(v).trim().toLowerCase();
+  return crypto.createHash("sha256").update(s).digest("hex");
 }
 function getClientIP(req: any) {
   const xfwd = (req.headers["x-forwarded-for"] as string) || "";
@@ -22,8 +24,9 @@ function getUA(req: any) {
   return (req.headers["user-agent"] as string) || undefined;
 }
 
-/** POST /capi/purchase
- * body: { event_id: string, value: number, currency: string, email?: string, order_id?: string }
+/**
+ * POST /capi/purchase
+ * body: { event_id, value, currency, email?, order_id? }
  */
 router.post("/purchase", async (req, res) => {
   try {
@@ -40,7 +43,7 @@ router.post("/purchase", async (req, res) => {
           event_time: Math.floor(Date.now() / 1000),
           action_source: "website",
           event_source_url: "https://thelasttryielts.com/checkout/success",
-          event_id, // must match fbq(..., {eventID})
+          event_id,
           user_data: {
             em: email ? [sha256Lower(email)] : undefined,
             client_ip_address: getClientIP(req),
@@ -62,10 +65,10 @@ router.post("/purchase", async (req, res) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const out = await r.json();
+    const out: any = await r.json();
     if (!r.ok) return res.status(400).json(out);
     return res.json(out);
-  } catch (e:any) {
+  } catch (e: any) {
     return res.status(500).json({ error: e?.message || "CAPI error" });
   }
 });
