@@ -1,120 +1,179 @@
 // backend/src/routes/payments.ts
-import { Router } from "express";
-
-const router = Router();
-
-/**
- * Flexible request body (any of these will work):
- * - amountINR | priceINR | price | amount | total | finalPriceINR
- * - brand | site
- * - couponCode | coupon_code | coupon
- *
- * Response: Razorpay order JSON + { finalPriceINR }
- */
-router.post("/order", async (req, res) => {
-  try {
-    const body = req.body || {};
-
-    // list/original price (e.g., 499)
-    const listPrice = Number(
-      body.amountINR ?? body.priceINR ?? body.price ?? body.amount ?? body.total ?? 0
-    );
-    if (!listPrice) {
-      return res.status(400).json({ error: "amountINR (or price) required" });
-    }
-
-    // brand tag for dashboard filtering (two sites)
-    const brandRaw = body.brand ?? body.site;
-    const brand = String(brandRaw || "TLLI").toUpperCase() === "IEBK" ? "IEBK" : "TLLI";
-
-    // coupon (support several keys)
-    const couponCode = String(
-      body.couponCode ?? body.coupon_code ?? body.coupon ?? ""
-    ).trim().toUpperCase();
-
-    // client’s idea of final (we won’t trust it blindly)
-    const clientFinal = Number(body.finalPriceINR ?? listPrice);
-
-    // server decision: allow only known test coupons to drop to ₹1
-    const ALLOWED_TEST_COUPONS = new Set(["TEST499TO1", "DEMO1RUPEE"]);
-    const expectedFinal =
-      couponCode && ALLOWED_TEST_COUPONS.has(couponCode) ? 1 : listPrice;
-
-    const finalPriceINR = expectedFinal; // enforce
-
-    // Razorpay credentials
-    const keyId = process.env.RAZORPAY_KEY_ID!;
-    const keySecret = process.env.RAZORPAY_KEY_SECRET!;
-    if (!keyId || !keySecret) {
-      return res.status(500).json({ error: "Missing Razorpay keys" });
-    }
-    const auth = Buffer.from(`${keyId}:${keySecret}`).toString("base64");
-
-    // Build order payload
-    const payload = {
-      amount: finalPriceINR * 100,           // paise
-      currency: "INR",
-      receipt: `${brand.toLowerCase()}_${Date.now()}`, // tlli_* or iebk_*
-      payment_capture: 1,
-      notes: {
-        brand,
-        list_price_inr: String(listPrice),
-        final_price_inr: String(finalPriceINR),
-        coupon: couponCode || "",
-        guarded: String(clientFinal !== expectedFinal),
-      },
-    };
-
-    // Call Razorpay REST (no SDK needed)
-    const r = await fetch("https://api.razorpay.com/v1/orders", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Basic ${auth}`,
-      },
-      body: JSON.stringify(payload),
-    });
-
-    const out: any = await r.json(); // <- type as any so spread is OK for TS
-    if (!r.ok) {
-      return res.status(400).json(out); // pass Razorpay error through
-    }
-
-    // Return Razorpay order + the price actually charged
-    return res.json({ ...out, finalPriceINR });
-  } catch (e: any) {
-    return res.status(500).json({ error: e?.message || "Razorpay error" });
-  }
-});
-
-export default router;
-
-// --- Grant access after successful Razorpay payment ---
-// POST /api/payments/grant-access
-// body: { email: string, moduleType: 'Academic' | 'General', order_id?: string, amountINR?: number, couponCode?: string }
+import express from 'express';
+import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
 
+const router = express.Router();
+
+// ---- ENV ----
+const RZP_KEY_ID = process.env.RAZORPAY_KEY_ID || '';
+const RZP_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || '';
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_ROLE =
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || '';
 
-const supabaseSr =
+const supabase =
   SUPABASE_URL && SUPABASE_SERVICE_ROLE
     ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
     : null;
 
+function requireEnv(ok: boolean, name: string) {
+  if (!ok) throw new Error(`Missing env: ${name}`);
+}
+
+// ---- HELPERS ----
+async function rzpCreateOrder(payload: any) {
+  requireEnv(!!RZP_KEY_ID, 'RAZORPAY_KEY_ID');
+  requireEnv(!!RZP_KEY_SECRET, 'RAZORPAY_KEY_SECRET');
+  const auth = Buffer.from(`${RZP_KEY_ID}:${RZP_KEY_SECRET}`).toString('base64');
+
+  const res = await fetch('https://api.razorpay.com/v1/orders', {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${auth}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Razorpay order error: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+/**
+ * Create order
+ * body: { amountINR: number, finalPriceINR?: number, brand: 'TLLI'|'IEBK', email?: string, userId?: string, moduleType?: 'Academic'|'General', couponCode?: string }
+ */
+router.post('/order', async (req, res) => {
+  try {
+    const {
+      amountINR,
+      finalPriceINR,
+      brand,
+      email,
+      userId,
+      moduleType,
+      couponCode,
+    } = req.body || {};
+
+    if (!amountINR || !brand) {
+      return res.status(400).json({ error: 'amountINR and brand are required' });
+    }
+
+    const finalPrice = Number.isFinite(finalPriceINR) ? Number(finalPriceINR) : Number(amountINR);
+
+    const payload = {
+      amount: Math.round(finalPrice * 100), // paise
+      currency: 'INR',
+      receipt: `${(brand || 'TLLI').toLowerCase()}_${Date.now()}`,
+      payment_capture: 1,
+      notes: {
+        brand: brand || '',
+        email: email || '',
+        user_id: userId || '',
+        module_type: moduleType || '',
+        coupon: couponCode || '',
+        list_price_inr: String(amountINR),
+        final_price_inr: String(finalPrice),
+      },
+    };
+
+    const order = await rzpCreateOrder(payload);
+
+    return res.json({
+      id: order.id,
+      amount: order.amount,
+      currency: order.currency,
+      finalPriceINR: finalPrice,
+    });
+  } catch (e: any) {
+    console.error('payments/order error:', e);
+    return res.status(500).json({ error: e?.message || 'Failed to create order' });
+  }
+});
+
+/**
+ * Verify payment (client success handler calls this).
+ * Also grants access by upserting user_access.has_paid = true.
+ * body: { razorpay_order_id, razorpay_payment_id, razorpay_signature, email, userId, moduleType }
+ */
+router.post('/verify', async (req, res) => {
+  try {
+    const {
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+      email,
+      userId,
+      moduleType,
+    } = req.body || {};
+
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ error: 'Invalid verification payload' });
+    }
+
+    requireEnv(!!RZP_KEY_SECRET, 'RAZORPAY_KEY_SECRET');
+
+    const body = `${razorpay_order_id}|${razorpay_payment_id}`;
+    const expectedSignature = crypto.createHmac('sha256', RZP_KEY_SECRET).update(body).digest('hex');
+
+    if (expectedSignature !== razorpay_signature) {
+      return res.status(400).json({ error: 'Signature mismatch' });
+    }
+
+    // Save payment + grant access
+    if (supabase) {
+      // payments table is optional; adjust columns to your schema
+      await supabase.from('payments').insert({
+        user_email: email || null,
+        user_id: userId || null,
+        module_type: moduleType || null,
+        provider: 'razorpay',
+        order_id: razorpay_order_id,
+        payment_id: razorpay_payment_id,
+        status: 'captured',
+      });
+
+      if (email && moduleType) {
+        // your frontend checks `user_access.has_paid`
+        await supabase
+          .from('user_access')
+          .upsert(
+            {
+              user_email: email,
+              module_type: moduleType,
+              has_paid: true, // NOTE: your checkPaymentStatus() reads "has_paid"
+              source: 'razorpay_verify',
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'user_email,module_type' }
+          );
+      }
+    }
+
+    return res.json({ ok: true });
+  } catch (e: any) {
+    console.error('payments/verify error:', e);
+    return res.status(500).json({ error: e?.message || 'Verification failed' });
+  }
+});
+
+/**
+ * Optional: direct grant-access endpoint (used if you want instant grant without verify)
+ * body: { email, moduleType, order_id?, amountINR?, couponCode? }
+ */
 router.post('/grant-access', async (req, res) => {
   try {
     const { email, moduleType, order_id, amountINR, couponCode } = req.body || {};
     if (!email || !moduleType) {
       return res.status(400).json({ error: 'email and moduleType are required' });
     }
-    if (!supabaseSr) {
-      return res.status(500).json({ error: 'Database not configured' });
-    }
+    if (!supabase) return res.status(500).json({ error: 'Database not configured' });
 
-    // 1) Record a payment row (optional; adjust table/columns to match your schema)
-    await supabaseSr.from('payments').insert({
+    await supabase.from('payments').insert({
       user_email: email,
       module_type: moduleType,
       provider: 'razorpay',
@@ -124,31 +183,24 @@ router.post('/grant-access', async (req, res) => {
       status: 'captured',
     });
 
-    // 2) Grant access that your gatekeeper/MockRunner checks.
-    // Adjust table/columns to YOUR schema. The common pattern you described is `user_access`.
-    // Make (user_email,module_type) unique on the table so this is idempotent.
-    const { error } = await supabaseSr
+    await supabase
       .from('user_access')
       .upsert(
         {
           user_email: email,
-          module_type: moduleType, // 'Academic'|'General'
-          is_paid: true,
-          source: 'razorpay',
+          module_type: moduleType,
+          has_paid: true,
+          source: 'grant_access_api',
           updated_at: new Date().toISOString(),
         },
         { onConflict: 'user_email,module_type' }
       );
 
-    if (error) {
-      console.error('grant-access upsert error:', error);
-      return res.status(500).json({ error: 'Failed to grant access' });
-    }
-
     return res.json({ ok: true });
   } catch (e: any) {
-    console.error('grant-access error:', e);
-    return res.status(500).json({ error: e?.message || 'grant-access failed' });
+    console.error('payments/grant-access error:', e);
+    return res.status(500).json({ error: e?.message || 'Grant access failed' });
   }
 });
 
+export default router;
