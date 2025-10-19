@@ -62,6 +62,13 @@ app.use('/api/capi', capiRouter);                // alias
 
 // Healthcheck
 app.get('/health', (_req, res) => res.json({ ok: true }));
+import razorpayWebhookRouter from './routes/razorpay-webhook.js';
+
+// ... your existing middleware & routes
+
+// Webhook must come BEFORE json body-parsing routes that would conflict
+app.use('/api/payments', razorpayWebhookRouter);
+
 
 app.listen(PORT, () => {
   console.log(`✅ Server listening on :${PORT}`);
