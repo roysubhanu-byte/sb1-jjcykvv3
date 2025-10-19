@@ -1,139 +1,70 @@
-// backend/src/routes/razorpay-webhook.ts
-import type { Request, Response } from 'express';
+import express from 'express';
 import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
+
+const router = express.Router();
 
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_ROLE =
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || '';
 const RZP_WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || '';
 
-const supabase =
-  SUPABASE_URL && SUPABASE_SERVICE_ROLE
-    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
-    : null;
+const supabase = (SUPABASE_URL && SUPABASE_SERVICE_ROLE)
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
+  : null;
 
-// Helper: verify signature
-function verifySignature(rawBody: Buffer, signature: string) {
-  const expected = crypto
-    .createHmac('sha256', RZP_WEBHOOK_SECRET)
-    .update(rawBody)
-    .digest('hex');
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
-}
+router.post('/razorpay/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  try {
+    if (!RZP_WEBHOOK_SECRET) return res.status(500).send('secret missing');
 
-// Grant access (idempotent)
-async function grantAccess({
-  email,
-  moduleType,
-  orderId,
-  amount,
-  couponCode,
-}: {
-  email?: string;
-  moduleType?: 'Academic' | 'General';
-  orderId?: string;
-  amount?: number;
-  couponCode?: string;
-}) {
-  if (!supabase) return;
+    const signature = req.headers['x-razorpay-signature'] as string;
+    const payload = req.body as Buffer;             // raw body because of HMAC
+    const digest = crypto.createHmac('sha256', RZP_WEBHOOK_SECRET).update(payload).digest('hex');
 
-  // Record payment (adjust table/columns if needed)
-  await supabase.from('payments').insert({
-    user_email: email || null,
-    module_type: moduleType || null,
-    provider: 'razorpay',
-    order_id: orderId || null,
-    amount_inr: amount ?? null,
-    coupon_code: couponCode || null,
-    status: 'captured',
-  });
+    if (digest !== signature) return res.status(400).send('invalid signature');
 
-  // Only grant access if we know the user email + module
-  if (email && moduleType) {
-    await supabase
-      .from('user_access')
-      .upsert(
-        {
+    const event = JSON.parse(payload.toString('utf8'));
+
+    // We only care after payment is captured/authorized
+    if (event?.event === 'payment.captured' || event?.event === 'payment.authorized') {
+      const payment = event.payload.payment.entity;
+
+      // The order carries our notes (email, module_type, coupon, etc.)
+      const orderNotes = payment?.notes || {};
+      const email = orderNotes.email || event?.payload?.order?.entity?.notes?.email || null;
+      const moduleType = orderNotes.module_type || event?.payload?.order?.entity?.notes?.module_type || null;
+      const orderId = payment?.order_id || null;
+
+      // Record payment
+      if (supabase) {
+        await supabase.from('payments').insert({
           user_email: email,
           module_type: moduleType,
-          is_paid: true,
-          source: 'razorpay_webhook',
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'user_email,module_type' }
-      );
-  }
-}
+          provider: 'razorpay',
+          order_id: orderId,
+          payment_id: payment?.id || null,
+          amount_inr: Number(payment?.amount || 0) / 100,
+          status: 'captured',
+          coupon_code: orderNotes.coupon || null,
+        }).select().maybeSingle();
 
-// MAIN HANDLER (raw body required)
-export async function razorpayWebhook(req: Request, res: Response) {
-  try {
-    if (!RZP_WEBHOOK_SECRET) return res.status(500).send('Missing webhook secret');
-
-    const signature = (req.headers['x-razorpay-signature'] || '') as string;
-    const raw = (req as any).body as Buffer; // express.raw puts Buffer here
-
-    if (!signature || !raw || !verifySignature(raw, signature)) {
-      return res.status(400).send('Invalid signature');
-    }
-
-    const event = JSON.parse(raw.toString('utf8'));
-
-    // Common fields (structure depends on event)
-    const type: string = event.event;
-    const payment = event?.payload?.payment?.entity;
-    const order = event?.payload?.order?.entity;
-
-    // Try to recover email/module from payment/notes (prefill these in your order if possible)
-    const email: string | undefined =
-      payment?.email || payment?.notes?.email || order?.notes?.email;
-    const moduleType =
-      (payment?.notes?.module_type || order?.notes?.module_type) as
-        | 'Academic'
-        | 'General'
-        | undefined;
-    const couponCode: string | undefined = payment?.notes?.coupon || order?.notes?.coupon;
-    const amountINR: number | undefined =
-      typeof payment?.amount === 'number' ? Math.round(payment.amount / 100) : undefined;
-    const orderId: string | undefined = payment?.order_id || order?.id;
-
-    switch (type) {
-      case 'payment.captured':
-      case 'order.paid': {
-        await grantAccess({
-          email,
-          moduleType,
-          orderId,
-          amount: amountINR,
-          couponCode,
-        });
-        break;
-      }
-      case 'payment.failed': {
-        // Optional: store failed attempt
-        if (supabase && orderId) {
-          await supabase.from('payments').insert({
-            user_email: email || null,
-            module_type: moduleType || null,
-            provider: 'razorpay',
-            order_id: orderId,
-            amount_inr: amountINR ?? null,
-            coupon_code: couponCode || null,
-            status: 'failed',
-          });
+        if (email && moduleType) {
+          await supabase.from('user_access').upsert({
+            user_email: email,
+            module_type: moduleType,
+            has_paid: true,
+            source: 'razorpay_webhook',
+            updated_at: new Date().toISOString(),
+          }, { onConflict: 'user_email,module_type' });
         }
-        break;
       }
-      default:
-        // ignore other events
-        break;
     }
 
-    // Always respond quickly (Razorpay retries on non-2xx)
     return res.status(200).send('ok');
   } catch (e) {
-    console.error('Razorpay webhook error:', e);
-    return res.status(200).send('ok'); // still 200 to avoid repeated retries storm
+    console.error('webhook error:', e);
+    return res.status(200).send('ok'); // respond 200 so Razorpay stops retrying
   }
-}
+});
+
+export default router;
