@@ -50,7 +50,8 @@ export function webhookRawHandler(req: express.Request, res: express.Response) {
 
       const notes = (pay.notes || {}) as Record<string, string>;
       const email = (notes.email || '').toLowerCase();
-      const moduleType = notes.module_type as 'Academic' | 'General' | undefined;
+     const moduleType = notes.moduleType as 'Academic' | 'General' | undefined;
+
       const coupon = notes.coupon || '';
 
       const amountPaise = Number(pay.amount || 0);
