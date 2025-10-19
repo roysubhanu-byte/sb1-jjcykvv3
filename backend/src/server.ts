@@ -14,6 +14,13 @@ import { detailedScoringRouter } from './routes/detailed-scoring.js';
 import speakingAsrRouter from './routes/speaking-asr.js';
 import speakingScorerRouter from './routes/speaking-scorer.js';
 
+// add near other imports
+import { couponsRouter } from './routes/coupons.js';
+
+// ...after other app.use(...)
+app.use('/api/coupons', couponsRouter);  // POST /api/coupons/validate , /api/coupons/record-usage
+
+
 // ✅ NEW: add these two lines (make sure the files exist)
 import paymentsRouter from './routes/payments.js';
 import capiRouter from './routes/capi.js';
