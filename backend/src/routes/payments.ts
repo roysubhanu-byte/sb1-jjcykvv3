@@ -1,10 +1,11 @@
+// src/routes/payments.ts
 import express from 'express';
 import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
 
 const router = express.Router();
 
-// ----- ENV -----
+// ---- ENV ----
 const RZP_KEY_ID = process.env.RAZORPAY_KEY_ID || '';
 const RZP_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || '';
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
@@ -12,22 +13,16 @@ const SUPABASE_SERVICE_ROLE =
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || '';
 
 const supabase =
-  SUPABASE_URL && SUPABASE_SERVICE_ROLE
-    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
-    : null;
+  SUPABASE_URL && SUPABASE_SERVICE_ROLE ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE) : null;
 
-function requireEnv(ok: boolean, name: string) {
+function must(ok: boolean, name: string) {
   if (!ok) throw new Error(`Missing env: ${name}`);
 }
 
-// Razorpay order type we care about
-type RzpOrder = { id: string; amount: number; currency: string };
-
-// ----- Helpers -----
-async function rzpCreateOrder(payload: any): Promise<RzpOrder> {
-  requireEnv(!!RZP_KEY_ID, 'RAZORPAY_KEY_ID');
-  requireEnv(!!RZP_KEY_SECRET, 'RAZORPAY_KEY_SECRET');
-
+// ---- Helpers ----
+async function rzpCreateOrder(payload: any) {
+  must(!!RZP_KEY_ID, 'RAZORPAY_KEY_ID');
+  must(!!RZP_KEY_SECRET, 'RAZORPAY_KEY_SECRET');
   const auth = Buffer.from(`${RZP_KEY_ID}:${RZP_KEY_SECRET}`).toString('base64');
 
   const res = await fetch('https://api.razorpay.com/v1/orders', {
@@ -43,26 +38,17 @@ async function rzpCreateOrder(payload: any): Promise<RzpOrder> {
     const text = await res.text();
     throw new Error(`Razorpay order error: ${res.status} ${text}`);
   }
-
-  // Cast to our minimal shape to avoid TS “unknown”
-  return (await res.json()) as RzpOrder;
+  const data: any = await res.json();
+  return data;
 }
 
 /**
- * POST /payments/order
- * body: { amountINR, finalPriceINR?, brand, email?, userId?, moduleType?, couponCode? }
+ * POST /api/payments/order
+ * body: { amountINR: number, finalPriceINR?: number, brand: 'TLLI'|'IEBK', email?: string, userId?: string, moduleType?: 'Academic'|'General', couponCode?: string }
  */
 router.post('/order', async (req, res) => {
   try {
-    const {
-      amountINR,
-      finalPriceINR,
-      brand,
-      email,
-      userId,
-      moduleType,
-      couponCode,
-    } = req.body || {};
+    const { amountINR, finalPriceINR, brand, email, userId, moduleType, couponCode } = req.body || {};
 
     if (!amountINR || !brand) {
       return res.status(400).json({ error: 'amountINR and brand are required' });
@@ -71,24 +57,23 @@ router.post('/order', async (req, res) => {
     const finalPrice = Number.isFinite(finalPriceINR) ? Number(finalPriceINR) : Number(amountINR);
 
     const payload = {
-      amount: Math.round(finalPrice * 100), // paise
+      amount: Math.round(finalPrice * 100), // in paise
       currency: 'INR',
       receipt: `${(brand || 'TLLI').toLowerCase()}_${Date.now()}`,
       payment_capture: 1,
       notes: {
-        // keep both to be tolerant of old/new frontends
-        moduleType: moduleType || '',
-        couponCode: couponCode || '',
+        // IMPORTANT: these names match what your frontend sends
         brand: brand || '',
         email: email || '',
-        user_id: userId || '',
+        userId: userId || '',
+        moduleType: moduleType || '',   // <— camelCase
+        couponCode: couponCode || '',   // <— camelCase
         list_price_inr: String(amountINR),
         final_price_inr: String(finalPrice),
       },
     };
 
-    const order = await rzpCreateOrder(payload);
-
+    const order: any = await rzpCreateOrder(payload);
     return res.json({
       id: order.id,
       amount: order.amount,
@@ -102,9 +87,65 @@ router.post('/order', async (req, res) => {
 });
 
 /**
- * POST /payments/grant-access
+ * POST /api/payments/verify (optional, if you use signature verification client-side)
+ * body: { razorpay_order_id, razorpay_payment_id, razorpay_signature, email, userId, moduleType }
+ */
+router.post('/verify', async (req, res) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, email, userId, moduleType } =
+      req.body || {};
+
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ error: 'Invalid verification payload' });
+    }
+
+    must(!!RZP_KEY_SECRET, 'RAZORPAY_KEY_SECRET');
+
+    const body = `${razorpay_order_id}|${razorpay_payment_id}`;
+    const expected = crypto.createHmac('sha256', RZP_KEY_SECRET).update(body).digest('hex');
+
+    if (expected !== razorpay_signature) {
+      return res.status(400).json({ error: 'Signature mismatch' });
+    }
+
+    if (supabase) {
+      await supabase.from('payments').insert({
+        user_email: email || null,
+        user_id: userId || null,
+        module_type: moduleType || null,
+        provider: 'razorpay',
+        order_id: razorpay_order_id,
+        payment_id: razorpay_payment_id,
+        status: 'captured',
+      });
+
+      if (email && moduleType) {
+        await supabase
+          .from('user_access')
+          .upsert(
+            {
+              user_email: email,
+              module_type: moduleType,
+              has_paid: true,
+              source: 'razorpay_verify',
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'user_email,module_type' }
+          );
+      }
+    }
+
+    return res.json({ ok: true });
+  } catch (e: any) {
+    console.error('payments/verify error:', e);
+    return res.status(500).json({ error: e?.message || 'Verification failed' });
+  }
+});
+
+/**
+ * POST /api/payments/grant-access
  * body: { email, moduleType, order_id?, amountINR?, couponCode? }
- * (Used by the client handler to grant access immediately.)
+ * Used by the Razorpay handler on the client to grant access immediately.
  */
 router.post('/grant-access', async (req, res) => {
   try {
@@ -145,49 +186,36 @@ router.post('/grant-access', async (req, res) => {
 });
 
 /**
- * (Alias) GET /payments/status
- * (New)   GET /payments/verify-access   <-- this is what your frontend is polling
- * Query: ?email=...&moduleType=...
- * Returns: { hasPaid: boolean }
+ * GET /api/payments/verify-access?email=...&moduleType=Academic|General
+ * Returns { hasPaid: boolean }
+ * This is the endpoint your frontend “Refresh Payment Status” & polling should call.
  */
-async function readAccess(email: string, moduleType: string): Promise<boolean> {
-  if (!supabase) return false;
-  const { data, error } = await supabase
-    .from('user_access')
-    .select('has_paid')
-    .eq('user_email', email)
-    .eq('module_type', moduleType)
-    .maybeSingle();
-  if (error) {
-    console.warn('readAccess error:', error);
-    return false;
-  }
-  return Boolean(data?.has_paid);
-}
-
 router.get('/verify-access', async (req, res) => {
   try {
-    const email = String(req.query.email || '');
-    const moduleType = String(req.query.moduleType || '');
-    if (!email || !moduleType) return res.status(400).json({ hasPaid: false });
+    const email = String(req.query.email || '').trim();
+    const moduleType = String(req.query.moduleType || '').trim();
 
-    const hasPaid = await readAccess(email, moduleType);
-    return res.status(200).json({ hasPaid });
-  } catch {
-    return res.status(200).json({ hasPaid: false });
-  }
-});
+    if (!email || !moduleType) {
+      return res.status(400).json({ error: 'email and moduleType are required' });
+    }
+    if (!supabase) return res.status(500).json({ error: 'Database not configured' });
 
-router.get('/status', async (req, res) => {
-  try {
-    const email = String(req.query.email || '');
-    const moduleType = String(req.query.moduleType || '');
-    if (!email || !moduleType) return res.status(400).json({ hasPaid: false });
+    const { data, error } = await supabase
+      .from('user_access')
+      .select('has_paid')
+      .eq('user_email', email)
+      .eq('module_type', moduleType)
+      .maybeSingle();
 
-    const hasPaid = await readAccess(email, moduleType);
-    return res.status(200).json({ hasPaid });
-  } catch {
-    return res.status(200).json({ hasPaid: false });
+    if (error) {
+      console.error('verify-access query error:', error);
+      return res.status(500).json({ error: 'Query failed' });
+    }
+
+    return res.json({ hasPaid: !!data?.has_paid });
+  } catch (e: any) {
+    console.error('payments/verify-access error:', e);
+    return res.status(500).json({ error: e?.message || 'verify-access failed' });
   }
 });
 
