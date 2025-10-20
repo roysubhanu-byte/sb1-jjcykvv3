@@ -1,102 +1,120 @@
-import crypto from 'crypto';
 import type { Request, Response } from 'express';
+import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SERVICE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_SERVICE_ROLE ||
-  '';
+const SUPABASE_SERVICE_ROLE =
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || '';
 const WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || '';
 
 const supabase =
-  SUPABASE_URL && SERVICE_KEY ? createClient(SUPABASE_URL, SERVICE_KEY) : null;
+  SUPABASE_URL && SUPABASE_SERVICE_ROLE
+    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
+    : null;
 
-function pickNote(notes: Record<string, any> | undefined, keys: string[]): string | null {
-  if (!notes) return null;
-  for (const k of keys) {
-    if (notes[k] != null && String(notes[k]).trim() !== '') return String(notes[k]).trim();
-  }
-  return null;
-}
-
-function verifySignature(raw: Buffer, signature: string, secret: string) {
-  const h = crypto.createHmac('sha256', secret).update(raw).digest('hex');
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(h));
-}
-
+/**
+ * Razorpay sends RAW body. We must verify signature against the raw string.
+ * Mounted with express.raw({ type: 'application/json' }) in server.ts
+ */
 export async function webhookRawHandler(req: Request, res: Response) {
   try {
-    if (!WEBHOOK_SECRET) return res.status(500).json({ error: 'Webhook secret not configured' });
+    if (!WEBHOOK_SECRET) {
+      console.error('Webhook: missing RAZORPAY_WEBHOOK_SECRET');
+      return res.status(500).send('Missing secret');
+    }
 
-    const rawBody = (req as any).body as Buffer; // express.raw
+    const raw = (req as any).body as Buffer; // from express.raw
+    const bodyStr = raw?.toString('utf8') ?? '';
+
     const signature = req.header('x-razorpay-signature') || '';
-    if (!signature) return res.status(400).json({ error: 'Missing signature' });
+    const expected = crypto.createHmac('sha256', WEBHOOK_SECRET).update(bodyStr).digest('hex');
 
-    if (!verifySignature(rawBody, signature, WEBHOOK_SECRET)) {
-      return res.status(400).json({ error: 'Invalid signature' });
+    if (signature !== expected) {
+      console.warn('Webhook: signature mismatch');
+      return res.status(400).send('Bad signature');
     }
 
-    const payload = JSON.parse(rawBody.toString('utf8'));
-    const event: string = payload?.event || '';
+    const event = JSON.parse(bodyStr) as {
+      event?: string;
+      payload?: {
+        payment?: {
+          entity?: {
+            id?: string;
+            order_id?: string;
+            amount?: number; // paise
+            currency?: string;
+            email?: string;
+            notes?: Record<string, any>;
+            status?: string;
+          };
+        };
+      };
+    };
 
-    let paymentEntity: any = null;
-    let orderEntity: any = null;
-
-    if (event === 'payment.captured') {
-      paymentEntity = payload?.payload?.payment?.entity || null;
-    } else if (event === 'order.paid') {
-      orderEntity = payload?.payload?.order?.entity || null;
-      paymentEntity = payload?.payload?.payment?.entity || null;
-    } else {
-      return res.json({ ok: true, ignored: event });
+    if (event.event !== 'payment.captured') {
+      // Acknowledge quickly for non-captured events
+      return res.status(200).json({ ok: true, ignored: event.event });
     }
 
-    const notes = paymentEntity?.notes || orderEntity?.notes || {};
-    const orderId = paymentEntity?.order_id || orderEntity?.id || '';
-    const paymentId = paymentEntity?.id || '';
-    const amountPaise = paymentEntity?.amount ?? orderEntity?.amount ?? 0;
-    const amountINR = Number(amountPaise) / 100;
+    const payment = event.payload?.payment?.entity || {};
+    const email = payment.email || payment.notes?.email || null;
 
-    // NEW: read the names your frontend sends
-    const email = pickNote(notes, ['email']);
-    const moduleType = pickNote(notes, ['moduleType', 'module_type']); // accept both
-    const couponCode = pickNote(notes, ['couponCode', 'coupon']);      // accept both
+    // 👇 Your frontend sends these names:
+    const moduleType =
+      payment.notes?.moduleType ?? payment.notes?.module_type ?? null;
+    const couponCode =
+      payment.notes?.couponCode ?? payment.notes?.coupon ?? null;
 
-    if (!email || !moduleType) {
-      console.warn('WEBHOOK: Missing email/moduleType', { notes });
-      return res.json({ ok: true, skipped: 'missing-email-or-moduleType' });
+    if (!supabase) {
+      console.error('Webhook: Supabase not configured');
+      return res.status(200).json({ ok: true }); // still ACK to Razorpay
     }
 
-    if (!supabase) return res.status(500).json({ error: 'Database not configured' });
-
+    // payments row (best-effort; avoid blocking)
     await supabase.from('payments').insert({
       user_email: email,
       module_type: moduleType,
       provider: 'razorpay',
-      order_id: orderId || null,
-      payment_id: paymentId || null,
-      amount_inr: isFinite(amountINR) ? amountINR : null,
+      order_id: payment.order_id || null,
+      payment_id: payment.id || null,
+      amount_inr: typeof payment.amount === 'number' ? Math.round(payment.amount / 100) : null,
       coupon_code: couponCode || null,
-      status: 'captured',
+      status: payment.status || 'captured'
     });
 
-    await supabase
-      .from('user_access')
-      .upsert(
-        {
-          user_email: email,
-          module_type: moduleType,
-          has_paid: true,
-          source: 'razorpay_webhook',
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'user_email,module_type' }
-      );
+    // grant access
+    if (email && moduleType) {
+      await supabase
+        .from('user_access')
+        .upsert(
+          {
+            user_email: email,
+            module_type: moduleType,
+            has_paid: true,
+            source: 'razorpay_webhook',
+            updated_at: new Date().toISOString()
+          },
+          { onConflict: 'user_email,module_type' }
+        );
+    }
 
-    return res.json({ ok: true });
+    // optionally record coupon usage (ignore errors)
+    if (couponCode && email) {
+      await supabase.from('coupon_usage').insert({
+        coupon_code: couponCode,
+        user_email: email,
+        payment_id: payment.id || null
+      });
+      // optional rpc if you created it
+      try {
+        await supabase.rpc('increment_coupon_usage', { coupon_code: couponCode });
+      } catch {}
+    }
+
+    return res.status(200).json({ ok: true });
   } catch (err) {
-    console.error('WEBHOOK ERROR:', err);
-    return res.json({ ok: true }); // avoid infinite retries
+    console.error('Webhook handler error:', err);
+    // still ACK 200 to prevent Razorpay retries storm; log for ops
+    return res.status(200).json({ ok: true });
   }
 }
