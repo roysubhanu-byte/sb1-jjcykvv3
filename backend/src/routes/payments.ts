@@ -4,7 +4,6 @@ import { createClient } from '@supabase/supabase-js';
 
 const router = express.Router();
 
-// ---- ENV ----
 const RZP_KEY_ID = process.env.RAZORPAY_KEY_ID || '';
 const RZP_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || '';
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
@@ -14,9 +13,7 @@ const SERVICE_KEY =
   '';
 
 const supabase =
-  SUPABASE_URL && SERVICE_KEY
-    ? createClient(SUPABASE_URL, SERVICE_KEY)
-    : null;
+  SUPABASE_URL && SERVICE_KEY ? createClient(SUPABASE_URL, SERVICE_KEY) : null;
 
 function need(ok: boolean, name: string) {
   if (!ok) throw new Error(`Missing env: ${name}`);
@@ -25,6 +22,7 @@ function need(ok: boolean, name: string) {
 async function rzpCreateOrder(payload: any) {
   need(!!RZP_KEY_ID, 'RAZORPAY_KEY_ID');
   need(!!RZP_KEY_SECRET, 'RAZORPAY_KEY_SECRET');
+
   const auth = Buffer.from(`${RZP_KEY_ID}:${RZP_KEY_SECRET}`).toString('base64');
 
   const res = await fetch('https://api.razorpay.com/v1/orders', {
@@ -45,15 +43,6 @@ async function rzpCreateOrder(payload: any) {
 
 /**
  * POST /payments/order
- * body: {
- *   amountINR: number,            // list price (e.g., 499)
- *   finalPriceINR?: number,       // what to charge (e.g., 1)
- *   brand: 'TLLI'|'IEBK',
- *   email?: string,
- *   userId?: string,
- *   moduleType?: 'Academic'|'General',
- *   couponCode?: string
- * }
  */
 router.post('/order', async (req, res) => {
   try {
@@ -79,7 +68,6 @@ router.post('/order', async (req, res) => {
       receipt: `${(brand || 'TLLI').toLowerCase()}_${Date.now()}`,
       payment_capture: 1,
       notes: {
-        // IMPORTANT: use the key names the webhook understands
         email: email || '',
         moduleType: moduleType || '',
         couponCode: couponCode || '',
@@ -105,8 +93,7 @@ router.post('/order', async (req, res) => {
 });
 
 /**
- * Optional Verify (if you still call it from the client)
- * body: { razorpay_order_id, razorpay_payment_id, razorpay_signature, email, userId, moduleType }
+ * POST /payments/verify   (optional if you want client-side verify)
  */
 router.post('/verify', async (req, res) => {
   try {
@@ -126,9 +113,9 @@ router.post('/verify', async (req, res) => {
     need(!!RZP_KEY_SECRET, 'RAZORPAY_KEY_SECRET');
 
     const body = `${razorpay_order_id}|${razorpay_payment_id}`;
-    const expectedSignature = crypto.createHmac('sha256', RZP_KEY_SECRET).update(body).digest('hex');
+    const expected = crypto.createHmac('sha256', RZP_KEY_SECRET).update(body).digest('hex');
 
-    if (expectedSignature !== razorpay_signature) {
+    if (expected !== razorpay_signature) {
       return res.status(400).json({ error: 'Signature mismatch' });
     }
 
@@ -168,7 +155,6 @@ router.post('/verify', async (req, res) => {
 
 /**
  * POST /payments/grant-access
- * body: { email, moduleType, order_id?, amountINR?, couponCode? }
  */
 router.post('/grant-access', async (req, res) => {
   try {
