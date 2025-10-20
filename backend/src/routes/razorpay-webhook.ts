@@ -1,126 +1,139 @@
-// backend/src/routes/razorpay-webhook.ts
-import type { Request, Response } from 'express';
 import crypto from 'crypto';
+import type { Request, Response } from 'express';
 import { createClient } from '@supabase/supabase-js';
 
+// ---- ENV ----
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_SERVICE_ROLE =
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || '';
+const SERVICE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_SERVICE_ROLE ||
+  '';
+
+const WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || '';
 
 const supabase =
-  SUPABASE_URL && SUPABASE_SERVICE_ROLE
-    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
+  SUPABASE_URL && SERVICE_KEY
+    ? createClient(SUPABASE_URL, SERVICE_KEY)
     : null;
 
-/**
- * Helper: normalize notes regardless of key style.
- * Accepts moduleType/couponCode (new) OR module_type/coupon (old).
- */
-function normalizeNotes(notes: any) {
-  const n = notes && typeof notes === 'object' ? notes : {};
-  return {
-    email: n.email ?? n.user_email ?? null,
-    moduleType: n.moduleType ?? n.module_type ?? null,
-    couponCode: n.couponCode ?? n.coupon ?? null,
-    listPriceINR: n.list_price_inr ? Number(n.list_price_inr) : null,
-    finalPriceINR: n.final_price_inr ? Number(n.final_price_inr) : null,
-  };
+// Helper to safely pull a value from notes using multiple key variants
+function pickNote(notes: Record<string, any> | undefined, keys: string[]): string | null {
+  if (!notes) return null;
+  for (const k of keys) {
+    if (notes[k] != null && String(notes[k]).trim() !== '') {
+      return String(notes[k]).trim();
+    }
+  }
+  return null;
+}
+
+function verifySignature(raw: Buffer, signature: string, secret: string) {
+  const hmac = crypto.createHmac('sha256', secret).update(raw);
+  const expected = hmac.digest('hex');
+  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
 }
 
 /**
- * IMPORTANT:
- * Set RAZORPAY_WEBHOOK_SECRET in Render to the exact same secret you set in Razorpay Dashboard.
+ * Razorpay sends different event payload shapes.
+ * We handle:
+ * - payment.captured    -> payload.payment.entity
+ * - order.paid          -> payload.order.entity (and sometimes payment info under payload.payment.entity)
  */
-export async function razorpayWebhook(req: Request, res: Response) {
+export async function webhookRawHandler(req: Request, res: Response) {
   try {
-    const WEBHOOK_SECRET =
-      process.env.RAZORPAY_WEBHOOK_SECRET || process.env.RAZORPAY_KEY_SECRET || '';
-
     if (!WEBHOOK_SECRET) {
+      console.error('WEBHOOK ERROR: Missing RAZORPAY_WEBHOOK_SECRET');
       return res.status(500).json({ error: 'Webhook secret not configured' });
     }
 
-    // Razorpay signs the RAW body. We must validate against the raw buffer.
+    const rawBody = (req as any).body as Buffer; // express.raw
     const signature = req.header('x-razorpay-signature') || '';
-    const bodyBuf = req.body as Buffer; // express.raw() ensures Buffer
 
-    const expected = crypto.createHmac('sha256', WEBHOOK_SECRET).update(bodyBuf).digest('hex');
-    if (expected !== signature) {
+    if (!signature) {
+      return res.status(400).json({ error: 'Missing signature' });
+    }
+
+    if (!verifySignature(rawBody, signature, WEBHOOK_SECRET)) {
       return res.status(400).json({ error: 'Invalid signature' });
     }
 
-    const event = JSON.parse(bodyBuf.toString('utf8'));
-    const eventType: string = event?.event || '';
+    // Parse JSON from raw buffer
+    const payload = JSON.parse(rawBody.toString('utf8'));
 
-    // We handle payment.captured and order.paid; you can add others if needed
-    const paymentEntity = event?.payload?.payment?.entity || null;
-    const orderEntity = event?.payload?.order?.entity || null;
+    const event: string = payload?.event || '';
+    let paymentEntity: any = null;
+    let orderEntity: any = null;
 
-    // Identify order/payment IDs and notes (payment notes override order notes if present)
-    const notesRaw = (paymentEntity?.notes ?? orderEntity?.notes) || {};
-    const notes = normalizeNotes(notesRaw);
+    if (event === 'payment.captured') {
+      paymentEntity = payload?.payload?.payment?.entity || null;
+    } else if (event === 'order.paid') {
+      orderEntity = payload?.payload?.order?.entity || null;
+      paymentEntity = payload?.payload?.payment?.entity || null;
+    } else {
+      // Ignore other events; respond 200 so Razorpay stops retrying
+      return res.json({ ok: true, ignored: event });
+    }
 
-    const orderId: string =
-      paymentEntity?.order_id ||
-      orderEntity?.id ||
-      event?.payload?.order_id ||
-      '';
-    const paymentId: string = paymentEntity?.id || '';
+    // Prefer payment entity for definitive values (amount, ids, notes)
+    const notes = paymentEntity?.notes || orderEntity?.notes || {};
+    const orderId = paymentEntity?.order_id || orderEntity?.id || '';
+    const paymentId = paymentEntity?.id || '';
+    const amountPaise = paymentEntity?.amount ?? orderEntity?.amount ?? 0;
+    const amountINR = Number(amountPaise) / 100;
 
-    const amountPaise: number | null =
-      typeof paymentEntity?.amount === 'number'
-        ? paymentEntity.amount
-        : typeof orderEntity?.amount === 'number'
-        ? orderEntity.amount
-        : null;
-    const amountINR = amountPaise != null ? amountPaise / 100 : notes.finalPriceINR;
+    // Accept both the old and the new key names
+    const email =
+      pickNote(notes, ['email']) || // same
+      null;
 
-    // Only act on successful events
-    const isSuccess =
-      eventType === 'payment.captured' ||
-      eventType === 'order.paid' ||
-      paymentEntity?.status === 'captured';
+    const moduleType =
+      pickNote(notes, ['moduleType', 'module_type']) || null;
 
-    if (!isSuccess) {
-      return res.json({ ok: true, ignored: true });
+    const couponCode =
+      pickNote(notes, ['couponCode', 'coupon']) || null;
+
+    if (!email || !moduleType) {
+      // We still 200 to stop retries, but log the reason
+      console.warn('WEBHOOK: Missing email/moduleType in notes', { notes });
+      return res.json({ ok: true, skipped: 'missing-email-or-moduleType' });
     }
 
     if (!supabase) {
+      console.error('WEBHOOK ERROR: Supabase not configured');
       return res.status(500).json({ error: 'Database not configured' });
     }
 
-    // Log payment
+    // 1) Record a payment row (columns you said exist)
     await supabase.from('payments').insert({
-      user_email: notes.email,
-      module_type: notes.moduleType,
+      user_email: email,
+      module_type: moduleType,
       provider: 'razorpay',
       order_id: orderId || null,
       payment_id: paymentId || null,
-      amount_inr: amountINR ?? null,
-      coupon_code: notes.couponCode || null,
+      amount_inr: isFinite(amountINR) ? amountINR : null,
+      coupon_code: couponCode || null,
       status: 'captured',
-      source: 'razorpay_webhook',
     });
 
-    // Flip access if we have email + moduleType
-    if (notes.email && notes.moduleType) {
-      await supabase
-        .from('user_access')
-        .upsert(
-          {
-            user_email: notes.email,
-            module_type: notes.moduleType,
-            has_paid: true,
-            source: 'razorpay_webhook',
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'user_email,module_type' }
-        );
-    }
+    // 2) Grant access
+    await supabase
+      .from('user_access')
+      .upsert(
+        {
+          user_email: email,
+          module_type: moduleType,
+          has_paid: true,
+          source: 'razorpay_webhook',
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_email,module_type' }
+      );
 
     return res.json({ ok: true });
-  } catch (err: any) {
-    console.error('razorpayWebhook error:', err);
-    return res.status(500).json({ error: err?.message || 'Webhook failed' });
+  } catch (err) {
+    console.error('WEBHOOK ERROR:', err);
+    // Always return 200 to avoid repeated retries if it’s a data issue,
+    // but you can change to 500 if you want Razorpay to retry.
+    return res.json({ ok: true });
   }
 }
