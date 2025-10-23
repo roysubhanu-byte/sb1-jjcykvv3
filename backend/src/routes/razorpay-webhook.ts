@@ -35,10 +35,10 @@ export async function webhookRawHandler(req: Request, res: Response) {
     const payment = event.payload?.payment?.entity;
     const notes = (payment?.notes || {}) as Record<string, any>;
 
-    // We read camelCase keys to match your frontend
-    const email = notes.email || '';
-    const moduleType = notes.moduleType || '';
-    const couponCode = notes.couponCode || '';
+    // ✅ normalize email to lowercase (matches frontend & queries)
+    const email = String(notes.email || '').trim().toLowerCase();
+    const moduleType = String(notes.moduleType || '').trim();
+    const couponCode = String(notes.couponCode || '').trim();
     const orderId = payment?.order_id || null;
     const amountInPaise = Number(payment?.amount || 0);
     const amountInr = amountInPaise ? amountInPaise / 100 : null;
@@ -48,7 +48,7 @@ export async function webhookRawHandler(req: Request, res: Response) {
       return res.json({ ok: true, missing: { email: !!email, moduleType: !!moduleType } });
     }
 
-    // Record payment & grant access
+    // Record payment
     await supabase.from('payments').insert({
       user_email: email,
       module_type: moduleType,
@@ -59,6 +59,7 @@ export async function webhookRawHandler(req: Request, res: Response) {
       status: 'captured',
     });
 
+    // Mark access
     await supabase
       .from('user_access')
       .upsert(
@@ -71,6 +72,13 @@ export async function webhookRawHandler(req: Request, res: Response) {
         },
         { onConflict: 'user_email,module_type' }
       );
+
+    // ✅ credit 3 attempts on webhook path as well (parity with grant-access)
+    await supabase.rpc('increment_entitlement', {
+      p_email: email,
+      p_module: moduleType,
+      p_add: 3,
+    });
 
     return res.json({ ok: true });
   } catch (e: any) {
