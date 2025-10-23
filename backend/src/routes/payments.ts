@@ -202,7 +202,8 @@ router.post('/grant-access', async (req, res) => {
  */
 router.get('/verify-access', async (req, res) => {
   try {
-    const email = String(req.query.email || '').trim();
+   const email = String(req.query.email || '').trim().toLowerCase();
+
     const moduleType = String(req.query.moduleType || '').trim();
 
     if (!email || !moduleType) {
