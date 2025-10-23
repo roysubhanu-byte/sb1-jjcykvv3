@@ -66,8 +66,8 @@ router.post('/order', async (req, res) => {
         brand: brand || '',
         email: email || '',
         userId: userId || '',
-        moduleType: moduleType || '',   // <— camelCase
-        couponCode: couponCode || '',   // <— camelCase
+        moduleType: moduleType || '',   // camelCase
+        couponCode: couponCode || '',   // camelCase
         list_price_inr: String(amountINR),
         final_price_inr: String(finalPrice),
       },
@@ -135,6 +135,7 @@ router.post('/verify', async (req, res) => {
       }
     }
 
+    // No attempts credit here because your frontend isn't calling /verify right now.
     return res.json({ ok: true });
   } catch (e: any) {
     console.error('payments/verify error:', e);
@@ -146,6 +147,8 @@ router.post('/verify', async (req, res) => {
  * POST /api/payments/grant-access
  * body: { email, moduleType, order_id?, amountINR?, couponCode? }
  * Used by the Razorpay handler on the client to grant access immediately.
+ *
+ * ✅ Minimal fix: add +3 attempts via RPC (one line) after setting has_paid.
  */
 router.post('/grant-access', async (req, res) => {
   try {
@@ -177,6 +180,13 @@ router.post('/grant-access', async (req, res) => {
         },
         { onConflict: 'user_email,module_type' }
       );
+
+    // 🔥 THE ONLY NEW LINE: credit 3 attempts (idempotent by your design)
+    await supabase.rpc('increment_entitlement', {
+      p_email: email,
+      p_module: moduleType,
+      p_add: 3
+    });
 
     return res.json({ ok: true });
   } catch (e: any) {
