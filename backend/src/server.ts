@@ -17,6 +17,7 @@ import speakingScorerRouter from './routes/speaking-scorer.js';
 import paymentsRouter from './routes/payments.js';
 import capiRouter from './routes/capi.js';
 import { couponsRouter } from './routes/coupons.js';
+import entitlementsRouter from './routes/entitlements.js';
 
 // RAW webhook handler — MUST be before json parser
 import { webhookRawHandler } from './routes/razorpay-webhook.js';
@@ -54,6 +55,9 @@ app.use('/api/payments', paymentsRouter);
 app.use('/api/coupons', couponsRouter);
 app.use('/capi', capiRouter);
 app.use('/api/capi', capiRouter);
+
+// ✅ Mount entitlements (attempts)
+app.use('/api', entitlementsRouter);
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
